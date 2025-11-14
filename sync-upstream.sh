@@ -12,12 +12,15 @@ echo ""
 echo "📍 切换到 main 分支..."
 git checkout main
 
-# 2. 从上游拉取最新代码
-echo "⬇️  从上游仓库拉取最新代码..."
+# 2. 从上游获取最新代码
+echo "⬇️  从上游仓库获取最新代码..."
 git fetch upstream
-git pull upstream master
 
-# 3. 推送到您的 fork
+# 3. 合并上游 master 分支到本地 main 分支
+echo "🔀 合并上游 master 分支..."
+git merge upstream/master
+
+# 4. 推送到您的 fork
 echo "⬆️  推送到您的 fork..."
 git push origin main
 

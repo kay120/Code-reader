@@ -15,8 +15,9 @@
 
 **执行步骤**:
 1. 切换到 main 分支
-2. 从上游仓库拉取最新代码
-3. 推送到您的 fork (kay120/Code-reader)
+2. 从上游仓库获取最新代码 (fetch)
+3. 合并上游 master 分支到本地 main 分支
+4. 推送到您的 fork (kay120/Code-reader)
 
 **使用场景**:
 - 每次开始工作前,先同步上游最新代码
@@ -109,7 +110,8 @@
 ```bash
 # 同步上游
 git checkout main
-git pull upstream master
+git fetch upstream
+git merge upstream/master
 git push origin main
 
 # 提交修改
