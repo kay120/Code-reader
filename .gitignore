@@ -250,3 +250,12 @@ backend/data/
 
 # Personal workflow documentation
 .augment/docs/
+
+# Personal workflow scripts
+sync-upstream.sh
+merge-main-to-dev.sh
+push-changes.sh
+prepare-pr.sh
+update-deps.sh
+SCRIPTS_README.md
+WORKFLOW_QUICK_GUIDE.md
