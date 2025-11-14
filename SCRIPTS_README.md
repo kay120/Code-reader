@@ -2,11 +2,19 @@
 
 本目录包含了几个常用的 Shell 脚本,帮助您更方便地管理代码仓库。
 
+## 🌳 分支策略
+
+本项目采用 **dev 分支开发模式**:
+
+- **main 分支**: 镜像上游仓库 (The-Agent-Builder/Code-reader 的 master 分支),保持干净,不直接在此开发
+- **dev 分支**: 日常开发分支,您的所有修改都在这里进行
+- **feature 分支**: 可选,用于开发具体功能
+
 ## 📜 脚本列表
 
 ### 1. `sync-upstream.sh` - 同步上游代码
 
-**用途**: 从上游仓库 (The-Agent-Builder/Code-reader) 同步最新代码到本地和您的 fork
+**用途**: 从上游仓库同步最新代码到本地 main 分支
 
 **使用方法**:
 ```bash
@@ -15,19 +23,38 @@
 
 **执行步骤**:
 1. 切换到 main 分支
-2. 从上游仓库获取最新代码 (fetch)
-3. 合并上游 master 分支到本地 main 分支
-4. 推送到您的 fork (kay120/Code-reader)
+2. 从上游获取最新代码
+3. 合并上游 master 到本地 main
+4. 推送到您的 fork 的 main 分支
+5. 自动切换回 dev 分支
 
 **使用场景**:
-- 每次开始工作前,先同步上游最新代码
-- 定期同步,保持您的 fork 与上游一致
+- 每次开始工作前同步上游最新代码
 
 ---
 
-### 2. `push-changes.sh` - 推送修改
+### 2. `merge-main-to-dev.sh` - 合并 main 到 dev
 
-**用途**: 提交并推送您的修改到 fork
+**用途**: 将 main 分支的更新合并到 dev 分支
+
+**使用方法**:
+```bash
+./merge-main-to-dev.sh
+```
+
+**执行步骤**:
+1. 切换到 dev 分支
+2. 合并 main 分支
+3. 推送到您的 fork 的 dev 分支
+
+**使用场景**:
+- 同步上游后,将更新合并到开发分支
+
+---
+
+### 3. `push-changes.sh` - 推送修改
+
+**用途**: 提交并推送您的修改到 fork 的 dev 分支
 
 **使用方法**:
 ```bash
@@ -35,21 +62,40 @@
 ```
 
 **执行步骤**:
-1. 检查是否有修改
-2. 显示当前修改列表
-3. 询问您输入提交信息
-4. 添加所有修改
-5. 提交修改
-6. 推送到您的 fork
+1. 检查当前分支(如在 main 会提示切换到 dev)
+2. 显示当前修改
+3. 询问提交信息
+4. 提交并推送
 
 **使用场景**:
-- 完成代码修改后,快速提交并推送
+- 完成代码修改后快速提交
 
 ---
 
-### 3. `update-deps.sh` - 更新依赖
+### 4. `prepare-pr.sh` - 准备 Pull Request
 
-**用途**: 更新 Python 和 Node.js 依赖到最新版本
+**用途**: 将 dev 的修改合并到 main,准备提交 PR 到上游
+
+**使用方法**:
+```bash
+./prepare-pr.sh
+```
+
+**执行步骤**:
+1. 检查 dev 分支是否有未提交修改
+2. 切换到 main 并同步上游
+3. 合并 dev 到 main
+4. 推送到您的 fork
+5. 切换回 dev 分支
+
+**使用场景**:
+- 准备向上游仓库提交 Pull Request
+
+---
+
+### 5. `update-deps.sh` - 更新依赖
+
+**用途**: 更新 Python 和 Node.js 依赖
 
 **使用方法**:
 ```bash
@@ -57,40 +103,55 @@
 ```
 
 **执行步骤**:
-1. 使用 `uv sync --upgrade` 更新 Python 依赖
-2. 使用 `pnpm update` 更新前端依赖
+1. 更新 Python 依赖 (uv)
+2. 更新前端依赖 (pnpm)
 
 **注意事项**:
-- `uv.lock` 和 `pnpm-lock.yaml` 已被 `.gitignore` 忽略
-- 这些锁文件不会被提交到仓库
+- 锁文件已被 .gitignore 忽略
 
 ---
 
 ## 🔄 典型工作流程
 
-### 场景 1: 开始新的工作
+### 场景 1: 日常开发
 
 ```bash
 # 1. 同步上游最新代码
 ./sync-upstream.sh
 
-# 2. 进行您的修改
+# 2. 将 main 的更新合并到 dev
+./merge-main-to-dev.sh
+
+# 3. 在 dev 分支进行开发
 # ... 编辑代码 ...
 
-# 3. 提交并推送
+# 4. 提交并推送
 ./push-changes.sh
 ```
 
-### 场景 2: 更新依赖
+### 场景 2: 提交 Pull Request 到上游
 
 ```bash
-# 1. 更新依赖
+# 1. 确保 dev 分支所有修改已提交
+./push-changes.sh
+
+# 2. 准备 PR (会自动合并到 main)
+./prepare-pr.sh
+
+# 3. 在 GitHub 上创建 Pull Request
+# 访问: https://github.com/kay120/Code-reader
+```
+
+### 场景 3: 更新依赖
+
+```bash
+# 1. 在 dev 分支更新依赖
 ./update-deps.sh
 
-# 2. 测试是否正常工作
+# 2. 测试是否正常
 # ... 运行测试 ...
 
-# 3. 如果一切正常,提交其他修改(不包括锁文件)
+# 3. 提交修改
 ./push-changes.sh
 ```
 
