@@ -14,6 +14,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import ProjectCard from "../components/ProjectCard";
+import ProjectCardSkeleton from "../components/ProjectCardSkeleton";
 import {
   api,
   RepositoryListResponse,
@@ -35,13 +36,22 @@ export default function HomePage() {
       setLoading(true);
       setError(null);
 
-      const response: RepositoryListResponse = await api.getRepositoriesList({
-        page,
-        page_size: pageSize,
-        order_by: "updated_at",
-        order_direction: "desc",
-        status: 1, // 只显示正常状态的项目
-      });
+      // 添加超时控制 - 15秒超时
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const response: RepositoryListResponse = await api.getRepositoriesList(
+        {
+          page,
+          page_size: pageSize,
+          order_by: "updated_at",
+          order_direction: "desc",
+          status: 1, // 只显示正常状态的项目
+        },
+        controller.signal
+      );
+
+      clearTimeout(timeoutId);
 
       if (response.status === "success") {
         setRepositories(response.data.repositories);
@@ -51,9 +61,13 @@ export default function HomePage() {
       } else {
         setError(response.message || "获取项目列表失败");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("获取项目列表失败:", err);
-      setError("网络错误，请稍后重试");
+      if (err.name === 'AbortError') {
+        setError("请求超时,后端可能正在处理分析任务,请稍后刷新");
+      } else {
+        setError("网络错误，请稍后重试");
+      }
     } finally {
       setLoading(false);
     }
@@ -158,7 +172,11 @@ export default function HomePage() {
                 <Database className="w-8 h-8 text-blue-600" />
               </div>
               <div className="text-2xl font-bold text-gray-900">
-                {totalCount}
+                {loading ? (
+                  <div className="h-8 w-16 bg-gray-200 rounded animate-pulse mx-auto" />
+                ) : (
+                  totalCount
+                )}
               </div>
               <div className="text-sm text-gray-600">项目总数</div>
             </div>
@@ -168,27 +186,48 @@ export default function HomePage() {
                 <TrendingUp className="w-8 h-8 text-green-600" />
               </div>
               <div className="text-2xl font-bold text-gray-900">
-                {repositories.reduce(
-                  (sum, repo) => sum + (repo.total_tasks || 0),
-                  0
+                {loading ? (
+                  <div className="h-8 w-16 bg-gray-200 rounded animate-pulse mx-auto" />
+                ) : (
+                  repositories.reduce(
+                    (sum, repo) => {
+                      // 统计所有任务数量
+                      const taskCount = repo.tasks ? repo.tasks.length : 0;
+                      return sum + taskCount;
+                    },
+                    0
+                  )
                 )}
               </div>
-              <div className="text-sm text-gray-600">分析任务</div>
+              <div className="text-sm text-gray-600">分析任务总数</div>
             </div>
 
             <div className="bg-white rounded-lg p-6 shadow-sm border">
               <div className="flex items-center justify-center mb-2">
-                <Users className="w-8 h-8 text-purple-600" />
+                <Loader2 className="w-8 h-8 text-orange-600" />
               </div>
               <div className="text-2xl font-bold text-gray-900">
-                {new Set(repositories.map((repo) => repo.user_id)).size}
+                {loading ? (
+                  <div className="h-8 w-16 bg-gray-200 rounded animate-pulse mx-auto" />
+                ) : (
+                  repositories.reduce(
+                    (sum, repo) => {
+                      // 统计正在运行的任务数量
+                      const runningCount = repo.tasks
+                        ? repo.tasks.filter((task: any) => task.status === "running").length
+                        : 0;
+                      return sum + runningCount;
+                    },
+                    0
+                  )
+                )}
               </div>
-              <div className="text-sm text-gray-600">活跃用户</div>
+              <div className="text-sm text-gray-600">正在处理</div>
             </div>
 
             <div className="bg-white rounded-lg p-6 shadow-sm border">
               <div className="flex items-center justify-center mb-2">
-                <Shield className="w-8 h-8 text-orange-600" />
+                <Shield className="w-8 h-8 text-purple-600" />
               </div>
               <div className="text-2xl font-bold text-gray-900">100%</div>
               <div className="text-sm text-gray-600">本地处理</div>
@@ -231,15 +270,25 @@ export default function HomePage() {
 
         {/* 内容区域 */}
         {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-            <span className="ml-2 text-gray-600">加载中...</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {Array.from({ length: pageSize }).map((_, index) => (
+              <ProjectCardSkeleton key={index} />
+            ))}
           </div>
         ) : error ? (
           <div className="text-center py-12">
-            <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">加载失败</h3>
+            <AlertCircle className={`w-12 h-12 mx-auto mb-4 ${
+              error.includes('超时') ? 'text-orange-500' : 'text-red-500'
+            }`} />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">
+              {error.includes('超时') ? '加载超时' : '加载失败'}
+            </h3>
             <p className="text-gray-600 mb-4">{error}</p>
+            {error.includes('超时') && (
+              <p className="text-sm text-gray-500 mb-4">
+                💡 提示: 后端正在处理分析任务,请稍后再试
+              </p>
+            )}
             <Button onClick={handleRefresh} variant="outline">
               <RefreshCw className="w-4 h-4 mr-2" />
               重试
@@ -265,7 +314,11 @@ export default function HomePage() {
             {/* 项目网格 */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {repositories.map((repository) => (
-                <ProjectCard key={repository.id} repository={repository} />
+                <ProjectCard
+                  key={repository.id}
+                  repository={repository}
+                  onDelete={handleRefresh}
+                />
               ))}
             </div>
 

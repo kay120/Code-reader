@@ -105,20 +105,71 @@ async def lifespan(app: FastAPI):
     应用生命周期管理
     """
     global background_task_running
-    
+
     # 启动时执行
     logger.info("应用启动中...")
     background_task_running = True
-    
+
     # 启动后台任务
     task = asyncio.create_task(process_empty_rendered_content())
-    
+
+    # 恢复未完成的分析任务
+    logger.info("检查并恢复未完成的分析任务...")
+    try:
+        from database import SessionLocal
+        from models import AnalysisTask, Repository
+        import threading
+
+        db = SessionLocal()
+        try:
+            # 查找状态为 running 或 pending 的任务
+            unfinished_tasks = db.query(AnalysisTask).filter(
+                AnalysisTask.status.in_(["running", "pending"])
+            ).all()
+
+            if unfinished_tasks:
+                logger.info(f"发现 {len(unfinished_tasks)} 个未完成的任务,正在恢复...")
+
+                # 导入 run_task 函数
+                from service.task_service import run_task
+
+                # 为每个未完成的任务重新启动后台线程
+                for task_obj in unfinished_tasks:
+                    logger.info(f"恢复任务 ID: {task_obj.id}, 状态: {task_obj.status}")
+
+                    # 获取 external_file_path (从仓库表获取)
+                    repo = db.query(Repository).filter(Repository.id == task_obj.repository_id).first()
+                    if repo:
+                        external_file_path = repo.local_path
+
+                        # 创建同步包装函数
+                        def run_task_sync(task_id, external_file_path):
+                            import asyncio
+                            asyncio.run(run_task(task_id, external_file_path))
+
+                        # 启动后台线程
+                        threading.Thread(
+                            target=run_task_sync,
+                            args=(task_obj.id, external_file_path),
+                            daemon=True
+                        ).start()
+
+                        logger.info(f"任务 {task_obj.id} 已重新启动")
+                    else:
+                        logger.warning(f"任务 {task_obj.id} 找不到对应的仓库,跳过恢复")
+            else:
+                logger.info("没有发现未完成的任务")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"恢复未完成任务时发生错误: {str(e)}")
+
     yield
-    
+
     # 关闭时执行
     logger.info("应用关闭中...")
     background_task_running = False
-    
+
     # 等待后台任务结束
     try:
         await asyncio.wait_for(task, timeout=5.0)

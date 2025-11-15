@@ -4,8 +4,8 @@
 
 // 在 Docker 容器中，通过 Nginx 反向代理访问后端 API
 // 使用当前域名，避免跨域问题
-const API_BASE_URL = window.location.origin;
-
+// const API_BASE_URL = window.location.origin;
+const API_BASE_URL = "http://localhost:8000";  // 本地开发时使用
 // 类型定义
 export interface RepositoryInfo {
     id: number;
@@ -416,7 +416,7 @@ export class ApiService {
         order_direction?: string;
         page?: number;
         page_size?: number;
-    }): Promise<RepositoryListResponse> {
+    }, signal?: AbortSignal): Promise<RepositoryListResponse> {
         const searchParams = new URLSearchParams();
 
         if (params?.user_id !== undefined) {
@@ -441,7 +441,7 @@ export class ApiService {
         const url = `/api/repository/repositories-list${
             searchParams.toString() ? `?${searchParams.toString()}` : ""
         }`;
-        return this.request(url);
+        return this.request(url, { signal });
     }
 
     // 根据仓库名称获取仓库信息（新增）

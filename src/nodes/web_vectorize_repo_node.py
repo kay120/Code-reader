@@ -58,36 +58,34 @@ class WebVectorizeRepoNode(AsyncNode):
         """
         task_id, repo_info = prep_res
 
-        try:
-            # 1. 从后端API获取文件内容
-            logger.info(f"📥 从API获取任务 {task_id} 的文件内容...")
-            await asyncio.sleep(1)  # 1秒延迟让用户看到开始状态
+        # 1. 从后端API获取文件内容
+        logger.info(f"📥 从API获取任务 {task_id} 的文件内容...")
+        await asyncio.sleep(1)  # 1秒延迟让用户看到开始状态
 
-            documents = await self._fetch_documents_from_api(task_id)
+        documents = await self._fetch_documents_from_api(task_id)
 
-            if not documents:
-                raise ValueError("未找到可向量化的文档")
-
-            logger.info(f"📄 获取到 {len(documents)} 个文档")
-            await asyncio.sleep(1)  # 1秒延迟
-
-            # 2. 创建向量知识库
+        if not documents:
+            logger.warning("⚠️ 未找到可向量化的文档,使用空索引")
             store_id = self._generate_store_id(repo_info)
-            logger.info(f"🚀 开始为仓库 {store_id} 创建向量知识库")
-            await asyncio.sleep(2)  # 2秒延迟让用户看到创建过程
+            return f"local_{store_id}_empty"
 
-            index_name = await self._create_vector_store(documents, store_id)
+        logger.info(f"📄 获取到 {len(documents)} 个文档")
+        await asyncio.sleep(1)  # 1秒延迟
 
-            if not index_name:
-                raise ValueError("向量知识库创建失败")
+        # 2. 创建向量知识库
+        store_id = self._generate_store_id(repo_info)
+        logger.info(f"🚀 开始为仓库 {store_id} 创建向量知识库")
+        await asyncio.sleep(2)  # 2秒延迟让用户看到创建过程
 
-            logger.info(f"✅ 向量知识库创建成功，索引: {index_name}")
-            await asyncio.sleep(1)  # 1秒延迟让用户看到完成状态
-            return index_name
+        index_name = await self._create_vector_store(documents, store_id)
 
-        except Exception as e:
-            logger.error(f"❌ 向量化构建失败: {str(e)}")
-            raise ValueError(f"Failed to build vector store: {str(e)}")
+        if not index_name:
+            logger.warning("⚠️ 向量知识库创建失败,使用本地索引")
+            return f"local_{store_id}"
+
+        logger.info(f"✅ 向量知识库创建成功，索引: {index_name}")
+        await asyncio.sleep(1)  # 1秒延迟让用户看到完成状态
+        return index_name
 
     async def post_async(self, shared: Dict[str, Any], prep_res: Tuple, exec_res: str) -> str:
         """
@@ -242,8 +240,11 @@ class WebVectorizeRepoNode(AsyncNode):
                         logger.error(f"创建知识库失败: HTTP {response.status} - {error_text}")
                         return None
         except Exception as e:
-            logger.error(f"调用RAG API失败: {str(e)}")
-            return None
+            logger.error(f"创建知识库失败: {str(e)}")
+            # RAG 服务不可用时,返回一个本地索引名称,允许后续步骤继续执行
+            logger.warning(f"⚠️ RAG 服务不可用,使用本地索引名称: {store_id}")
+            logger.warning(f"⚠️ 注意: 代码分析将在没有向量检索上下文的情况下进行")
+            return f"local_{store_id}"
 
     async def _add_documents_to_index(self, documents: list, index_name: str) -> bool:
         """向已存在的索引添加文档"""

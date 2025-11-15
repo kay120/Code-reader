@@ -17,6 +17,7 @@ interface FileExplorerProps {
   error?: string | null;
   highlightedFile?: string | null; // 新增：需要高亮的文件路径
   expandedPaths?: string[]; // 新增：需要展开的文件夹路径
+  taskId?: number | null; // 新增：任务ID用于获取进度
 }
 
 const mockFileTree: FileNode = {
@@ -185,7 +186,93 @@ export function FileExplorer({
   error,
   highlightedFile,
   expandedPaths,
+  taskId,
 }: FileExplorerProps) {
+  const [taskStatus, setTaskStatus] = useState<any>(null);
+  const [progressMessage, setProgressMessage] = useState<string>("正在生成中...");
+
+  // 检查任务状态
+  useEffect(() => {
+    if (!taskId || !error) return;
+
+    const checkStatus = async () => {
+      try {
+        console.log('[FileExplorer] 检查任务状态, taskId:', taskId);
+
+        // 添加超时控制
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
+
+        const response = await fetch(
+          `http://localhost:8000/api/repository/analysis-tasks/${taskId}`,
+          { signal: controller.signal }
+        );
+
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('[FileExplorer] 任务状态:', data);
+          setTaskStatus(data);
+
+          // 根据任务状态生成进度消息
+          if (data.status === "running") {
+            const step = data.current_step || 0;
+            const stepMessages = [
+              "正在扫描代码文件...",
+              "正在创建知识库...",
+              "正在分析数据模型...",
+              "正在生成文档结构..."
+            ];
+
+            let message = stepMessages[step] || "正在处理中...";
+
+            // 如果在步骤2(分析数据模型),显示文件分析进度
+            if (step === 2 && data.progress_percentage !== undefined) {
+              const processedFiles = data.successful_files || 0;
+              const totalFiles = data.total_files || 0;
+              message = `正在分析文件 (${processedFiles}/${totalFiles})`;
+            }
+
+            // 如果在步骤3(生成文档),尝试获取deepwiki进度
+            if (step === 3 && data.deepwiki_task_id) {
+              try {
+                const deepwikiResponse = await fetch(
+                  `http://localhost:8001/api/analyze/local/${data.deepwiki_task_id}/status`
+                );
+                if (deepwikiResponse.ok) {
+                  const deepwikiData = await deepwikiResponse.json();
+                  if (deepwikiData.progress !== undefined) {
+                    message = `${deepwikiData.current_stage || "正在生成文档"} (${deepwikiData.progress}%)`;
+                  }
+                }
+              } catch (e) {
+                console.error("获取deepwiki进度失败:", e);
+              }
+            }
+
+            setProgressMessage(message);
+            console.log('[FileExplorer] 进度消息:', message);
+          } else if (data.status === "pending") {
+            setProgressMessage("任务等待中...");
+          } else if (data.status === "completed") {
+            console.log('[FileExplorer] 任务已完成');
+          }
+        }
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          console.warn('[FileExplorer] 请求超时');
+        } else {
+          console.error("[FileExplorer] 检查任务状态失败:", err);
+        }
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, 5000);
+    return () => clearInterval(interval);
+  }, [taskId, error]);
+
   // 如果正在加载
   if (isLoading) {
     return (
@@ -201,9 +288,43 @@ export function FileExplorer({
   // 如果有错误
   if (error) {
     return (
-        <div className="flex items-center space-x-3 px-4 py-3">
-          <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent animate-spin rounded-full"/>
-          <span className="text-gray-500 font-medium text-sm">正在生成中...</span>
+        <div className="px-4 py-3 space-y-3">
+          <div className="flex items-center space-x-3">
+            <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent animate-spin rounded-full"/>
+            <span className="text-gray-700 font-medium text-sm">文件树生成中</span>
+          </div>
+
+          {/* 进度条 */}
+          {taskStatus?.current_step !== undefined && (
+            <div className="pl-8 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-600">
+                  步骤 {taskStatus.current_step + 1}/4
+                </span>
+                <span className="text-blue-600 font-medium">
+                  {Math.round(((taskStatus.current_step + 1) / 4) * 100)}%
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-1.5">
+                <div
+                  className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${((taskStatus.current_step + 1) / 4) * 100}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* 详细进度信息 */}
+          <div className="pl-8 space-y-1">
+            <p className="text-xs text-gray-600 font-medium">{progressMessage}</p>
+            {taskStatus?.current_step === 2 && taskStatus?.progress_percentage !== undefined && (
+              <p className="text-xs text-blue-600">
+                文件分析: {taskStatus.progress_percentage}%
+              </p>
+            )}
+          </div>
         </div>
     );
   }

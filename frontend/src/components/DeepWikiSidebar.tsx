@@ -148,6 +148,8 @@ export function Sidebar({
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set()
   );
+  const [taskStatus, setTaskStatus] = useState<any>(null);
+  const [progressMessage, setProgressMessage] = useState<string>("正在生成中...");
 
   // 加载README文档
   const loadReadmeContent = async (taskId: number) => {
@@ -175,10 +177,104 @@ export function Sidebar({
     }
   };
 
+  // 检查任务状态并更新进度消息
+  const checkTaskStatus = async (taskId: number) => {
+    try {
+      console.log('[DeepWikiSidebar] 检查任务状态, taskId:', taskId);
+
+      // 添加超时控制
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
+
+      const response = await fetch(
+        `http://localhost:8000/api/repository/analysis-tasks/${taskId}`,
+        { signal: controller.abort }
+      );
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('[DeepWikiSidebar] API响应:', result);
+
+        // API返回的是任务列表,需要提取第一个任务
+        const data = result.tasks && result.tasks.length > 0 ? result.tasks[0] : null;
+        console.log('[DeepWikiSidebar] 任务状态:', data);
+        setTaskStatus(data);
+
+        // 根据任务状态生成进度消息
+        if (data && data.status === "running") {
+          // 根据文件进度和task_index判断当前步骤
+          const successfulFiles = data.successful_files || 0;
+          const totalFiles = data.total_files || 0;
+
+          let step = 0;
+          let message = "正在扫描代码文件...";
+
+          if (successfulFiles === totalFiles && totalFiles > 0) {
+            // 文件扫描完成
+            if (data.task_index) {
+              step = 2; // 有索引说明知识库已创建,在分析数据模型
+              message = `正在分析数据模型 (${successfulFiles}/${totalFiles})`;
+            } else {
+              step = 1; // 正在创建知识库
+              message = "正在创建知识库...";
+            }
+          } else if (successfulFiles > 0) {
+            // 正在扫描文件
+            step = 0;
+            message = `正在扫描代码文件 (${successfulFiles}/${totalFiles})`;
+          }
+
+          // 更新taskStatus,添加current_step字段
+          setTaskStatus({ ...data, current_step: step });
+
+          // 如果在步骤3(生成文档),尝试获取deepwiki进度
+          if (step === 3 && data.deepwiki_task_id) {
+            try {
+              const deepwikiResponse = await fetch(
+                `http://localhost:8001/api/analyze/local/${data.deepwiki_task_id}/status`
+              );
+              if (deepwikiResponse.ok) {
+                const deepwikiData = await deepwikiResponse.json();
+                if (deepwikiData.progress !== undefined) {
+                  message = `${deepwikiData.current_stage || "正在生成文档"} (${deepwikiData.progress}%)`;
+                }
+              }
+            } catch (e) {
+              console.error("获取deepwiki进度失败:", e);
+            }
+          }
+
+          setProgressMessage(message);
+          console.log('[DeepWikiSidebar] 进度消息:', message);
+        } else if (data.status === "pending") {
+          setProgressMessage("任务等待中...");
+        } else if (data.status === "completed") {
+          console.log('[DeepWikiSidebar] 任务已完成');
+        }
+      }
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.warn('[DeepWikiSidebar] 请求超时');
+      } else {
+        console.error("[DeepWikiSidebar] 检查任务状态失败:", err);
+      }
+    }
+  };
+
   // 当taskId改变时加载README
   useEffect(() => {
     if (taskId) {
       loadReadmeContent(taskId);
+      checkTaskStatus(taskId);
+
+      // 如果任务还在进行中,每5秒检查一次状态
+      const interval = setInterval(() => {
+        checkTaskStatus(taskId);
+      }, 5000);
+
+      return () => clearInterval(interval);
     } else {
       setMarkdownSections([]);
     }
@@ -298,15 +394,49 @@ export function Sidebar({
       {/* 错误状态 - 正在生成中 */}
       {error && (
         <div className="space-y-3">
-          <div className="flex items-center space-x-3 px-2 py-2">
-            <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent animate-spin rounded-full"/>
-            <span className="text-gray-500 font-medium text-sm">正在生成中...</span>
+          <div className="px-2 py-2 space-y-3">
+            <div className="flex items-center space-x-3">
+              <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent animate-spin rounded-full"/>
+              <span className="text-gray-700 font-medium text-sm">文档生成中</span>
+            </div>
+
+            {/* 进度条 */}
+            {taskStatus?.current_step !== undefined && (
+              <div className="pl-8 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-gray-600">
+                    步骤 {taskStatus.current_step + 1}/4
+                  </span>
+                  <span className="text-blue-600 font-medium">
+                    {Math.round(((taskStatus.current_step + 1) / 4) * 100)}%
+                  </span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-1.5">
+                  <div
+                    className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                    style={{
+                      width: `${((taskStatus.current_step + 1) / 4) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 详细进度信息 */}
+            <div className="pl-8 space-y-1">
+              <p className="text-xs text-gray-600 font-medium">{progressMessage}</p>
+              {taskStatus?.current_step === 2 && taskStatus?.progress_percentage !== undefined && (
+                <p className="text-xs text-blue-600">
+                  文件分析进度: {taskStatus.progress_percentage}%
+                </p>
+              )}
+            </div>
           </div>
           <Button
             variant="outline"
             className="w-full justify-start px-3 py-2 h-auto text-blue-600 border-blue-200 hover:bg-blue-50"
             onClick={() => {
-              const chatUrl = currentRepository?.claude_session_id 
+              const chatUrl = currentRepository?.claude_session_id
                 ? `/chat/${currentRepository.claude_session_id}`
                 : '/chat';
               navigate(chatUrl);

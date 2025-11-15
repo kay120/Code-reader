@@ -187,7 +187,7 @@ async def verify_password(request: PasswordVerifyRequest):
 async def get_repository_by_id(
     repository_id: int,
     db: Session = Depends(get_db),
-    include_tasks: bool = Query(True, description="是否包含分析任务信息"),
+    include_tasks: bool = Query(False, description="是否包含分析任务信息"),
 ):
     """
     根据仓库ID获取仓库详细信息
@@ -195,7 +195,7 @@ async def get_repository_by_id(
     Args:
         repository_id: 仓库ID
         db: 数据库会话
-        include_tasks: 是否包含分析任务信息
+        include_tasks: 是否包含分析任务信息(默认False以提升性能)
 
     Returns:
         JSON响应包含仓库详细信息

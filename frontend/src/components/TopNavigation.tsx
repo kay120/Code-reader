@@ -16,6 +16,7 @@ import {
 } from "./ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { useAuth } from "../contexts/ProjectContext";
+import ServiceHealthMonitor from "./ServiceHealthMonitor";
 import {
   Brain,
   User,
@@ -196,6 +197,9 @@ export default function TopNavigation({
 
           {/* Right section - Navigation actions */}
           <div className="flex items-center space-x-3">
+            {/* Service Health Monitor */}
+            <ServiceHealthMonitor />
+
             {/* Home button */}
             {canNavigateToHome() && (
               <Tooltip>

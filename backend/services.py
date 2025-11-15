@@ -1321,6 +1321,9 @@ class RepositoryService:
             should_close = False
 
         try:
+            import time
+            start_time = time.time()
+
             # 验证排序字段
             valid_order_fields = ["id", "user_id", "name", "full_name", "status", "created_at", "updated_at"]
             if order_by not in valid_order_fields:
@@ -1351,6 +1354,7 @@ class RepositoryService:
 
             # 构建基础查询
             query = db.query(Repository)
+            logger.info(f"[性能] 参数验证耗时: {time.time() - start_time:.3f}s")
 
             # 添加筛选条件
             if user_id is not None:
@@ -1360,7 +1364,9 @@ class RepositoryService:
                 query = query.filter(Repository.status == status)
 
             # 获取总数
+            t1 = time.time()
             total_count = query.count()
+            logger.info(f"[性能] 查询总数耗时: {time.time() - t1:.3f}s, 总数: {total_count}")
 
             # 添加排序
             order_field = getattr(Repository, order_by)
@@ -1371,16 +1377,50 @@ class RepositoryService:
 
             # 添加分页
             offset = (page - 1) * page_size
+            t2 = time.time()
             repositories = query.offset(offset).limit(page_size).all()
+            logger.info(f"[性能] 查询仓库列表耗时: {time.time() - t2:.3f}s, 数量: {len(repositories)}")
+
+            # 一次性查询所有仓库的最新任务(提升性能)
+            repo_ids = [repo.id for repo in repositories]
+            if repo_ids:
+                # 使用子查询找出每个repository的最新任务ID
+                from sqlalchemy import func
+                subquery = (
+                    db.query(
+                        AnalysisTask.repository_id,
+                        func.max(AnalysisTask.id).label('max_id')
+                    )
+                    .filter(AnalysisTask.repository_id.in_(repo_ids))
+                    .group_by(AnalysisTask.repository_id)
+                    .subquery()
+                )
+
+                # 查询这些最新任务的完整信息
+                latest_tasks = (
+                    db.query(AnalysisTask)
+                    .join(subquery, AnalysisTask.id == subquery.c.max_id)
+                    .all()
+                )
+
+                # 创建repository_id到任务的映射
+                task_map = {task.repository_id: task for task in latest_tasks}
+
+                # 为每个仓库设置最新任务
+                for repo in repositories:
+                    latest_task = task_map.get(repo.id)
+                    repo.analysis_tasks = [latest_task] if latest_task else []
 
             # 计算分页信息
             total_pages = (total_count + page_size - 1) // page_size
             has_next = page < total_pages
             has_prev = page > 1
 
-            # 转换为字典格式
-            repositories_data = [repo.to_dict(include_tasks=False) for repo in repositories]
-
+            # 转换为字典格式,包含任务信息
+            t3 = time.time()
+            repositories_data = [repo.to_dict(include_tasks=True) for repo in repositories]
+            logger.info(f"[性能] to_dict转换耗时: {time.time() - t3:.3f}s")
+            logger.info(f"[性能] 总耗时: {time.time() - start_time:.3f}s")
             logger.info(f"成功获取仓库列表，总数: {total_count}，当前页: {page}/{total_pages}")
 
             return {
@@ -1509,6 +1549,9 @@ class RepositoryService:
         Returns:
             dict: 包含删除结果的字典
         """
+        import os
+        import shutil
+
         if db is None:
             db = SessionLocal()
             should_close = True
@@ -1525,6 +1568,9 @@ class RepositoryService:
                     "message": f"未找到ID为 {repository_id} 的仓库记录",
                     "repository_id": repository_id,
                 }
+
+            # 保存本地路径用于删除文件
+            local_path = repository.local_path
 
             if soft_delete:
                 # 软删除：设置status为0
@@ -1546,14 +1592,25 @@ class RepositoryService:
                 db.delete(repository)
                 db.commit()
 
+                # 删除磁盘文件
+                deleted_files = False
+                if local_path and os.path.exists(local_path):
+                    try:
+                        shutil.rmtree(local_path)
+                        deleted_files = True
+                        logger.info(f"成功删除仓库文件: {local_path}")
+                    except Exception as e:
+                        logger.warning(f"删除仓库文件失败: {local_path}, 错误: {str(e)}")
+
                 logger.info(f"成功硬删除仓库ID {repository_id}")
 
                 return {
                     "status": "success",
-                    "message": "仓库已物理删除",
+                    "message": "仓库已物理删除" + ("，磁盘文件已清理" if deleted_files else ""),
                     "repository_id": repository_id,
                     "delete_type": "hard",
                     "deleted_repository": repository_data,
+                    "deleted_files": deleted_files,
                 }
 
         except SQLAlchemyError as e:

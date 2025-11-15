@@ -391,6 +391,7 @@ export default function DeepWikiInterface({
                             error={error}
                             highlightedFile={highlightedFile}
                             expandedPaths={expandedPaths}
+                            taskId={currentTaskId}
                         />
                     </div>
                 </aside>

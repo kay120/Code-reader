@@ -99,6 +99,19 @@ export default function AnalysisProgress({
     indexName: "",
   });
 
+  // 文档生成进度状态
+  const [documentGenerationProgress, setDocumentGenerationProgress] = useState({
+    progress: 0,
+    currentStage: "",
+    isGenerating: false,
+  });
+
+  // 数据模型分析状态
+  const [dataModelAnalysisStatus, setDataModelAnalysisStatus] = useState({
+    isAnalyzing: false,
+    message: "",
+  });
+
   // 模拟队列数据（保留作为备用）
   const [queueData] = useState({
     position: Math.floor(Math.random() * 8) + 3, // 随机生成3-10的队列位置
@@ -792,10 +805,20 @@ log_file = "app.log"
 	          }
 
 	          try {
+	            // 设置分析状态
+	            setDataModelAnalysisStatus({
+	              isAnalyzing: true,
+	              message: "正在分析代码结构和数据模型...",
+	            });
+
 	            const dmResult = await api.analyzeDataModelFlow(taskId);
 
 	            if (dmResult.status !== "success") {
 	              console.error("分析数据模型失败:", dmResult.message);
+	              setDataModelAnalysisStatus({
+	                isAnalyzing: false,
+	                message: "",
+	              });
 	              return false;
 	            }
 
@@ -811,9 +834,17 @@ log_file = "app.log"
 	            }
 
 	            console.log("分析数据模型步骤完成");
+	            setDataModelAnalysisStatus({
+	              isAnalyzing: false,
+	              message: "分析完成",
+	            });
 	            return true;
 	          } catch (error) {
 	            console.error("分析数据模型过程中出错:", error);
+	            setDataModelAnalysisStatus({
+	              isAnalyzing: false,
+	              message: "",
+	            });
 	            return false;
 	          }
 
@@ -881,6 +912,13 @@ log_file = "app.log"
             const maxAttempts = 60; // 最多轮询60次（5分钟）
             const pollInterval = 5000; // 每5秒检查一次
 
+            // 设置文档生成状态为进行中
+            setDocumentGenerationProgress({
+              progress: 0,
+              currentStage: "初始化文档生成...",
+              isGenerating: true,
+            });
+
             while (!completed && attempts < maxAttempts) {
               attempts++;
               console.log(`第 ${attempts} 次检查文档生成状态...`);
@@ -888,6 +926,15 @@ log_file = "app.log"
               const statusResult = await api.checkDocumentGenerationStatus(
                 readmeApiTaskId
               );
+
+              // 更新进度显示
+              if (statusResult.progress !== undefined) {
+                setDocumentGenerationProgress({
+                  progress: statusResult.progress,
+                  currentStage: statusResult.current_stage || "处理中...",
+                  isGenerating: true,
+                });
+              }
 
               if (statusResult.status === "completed") {
                 console.log("文档结构生成完成!");
@@ -942,10 +989,22 @@ log_file = "app.log"
 
             if (!completed) {
               console.error("文档生成超时");
+              // 重置文档生成状态
+              setDocumentGenerationProgress({
+                progress: 0,
+                currentStage: "",
+                isGenerating: false,
+              });
               return false;
             }
 
             console.log("生成文档结构完成");
+            // 重置文档生成状态
+            setDocumentGenerationProgress({
+              progress: 100,
+              currentStage: "文档生成完成",
+              isGenerating: false,
+            });
             return true;
           } catch (error) {
             console.error("生成文档结构过程中出错:", error);
@@ -1585,6 +1644,33 @@ log_file = "app.log"
                                   正在处理 {vectorizationProgress.totalFiles}{" "}
                                   个文档...
                                 </span>
+                              )}
+                            {/* 在数据模型分析步骤显示状态 */}
+                            {index === 2 &&
+                              isActive &&
+                              dataModelAnalysisStatus.isAnalyzing && (
+                                <span className="block text-xs mt-1 opacity-75">
+                                  {dataModelAnalysisStatus.message}
+                                </span>
+                              )}
+                            {/* 在文档生成步骤显示详细进度 */}
+                            {index === 3 &&
+                              isActive &&
+                              documentGenerationProgress.isGenerating && (
+                                <div className="block text-xs mt-2 space-y-1">
+                                  <div className="flex items-center justify-between">
+                                    <span className="opacity-75">
+                                      {documentGenerationProgress.currentStage}
+                                    </span>
+                                    <span className="font-medium">
+                                      {documentGenerationProgress.progress}%
+                                    </span>
+                                  </div>
+                                  <Progress
+                                    value={documentGenerationProgress.progress}
+                                    className="h-1"
+                                  />
+                                </div>
                               )}
                           </span>
                           {isStepCompleted && (

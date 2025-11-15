@@ -1,5 +1,6 @@
 # 排除环境配置文件
 .env
+.embedder
 
 # 排除data/example/test文件夹（如果存在）
 data/example/test/

@@ -340,6 +340,10 @@ const MainContentComponent = ({
   const [isSVGViewerOpen, setIsSVGViewerOpen] = useState(false);
   const [selectedSVG, setSelectedSVG] = useState<HTMLElement | null>(null);
 
+  // 任务状态
+  const [taskStatus, setTaskStatus] = useState<any>(null);
+  const [progressMessage, setProgressMessage] = useState<string>("");
+
   // 使用 ref 来标记是否正在执行程序触发的滚动
   const isScrollingProgrammatically = useRef(false);
   // 节流定时器
@@ -356,6 +360,68 @@ const MainContentComponent = ({
     setIsSVGViewerOpen(false);
     setSelectedSVG(null);
   }, []);
+
+  // 检查任务状态
+  const checkTaskStatus = async (taskId: number) => {
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/repository/analysis-tasks/${taskId}`
+      );
+      const result = await response.json();
+      const data = result.tasks && result.tasks.length > 0 ? result.tasks[0] : null;
+
+      if (data) {
+        setTaskStatus(data);
+
+        // 根据任务状态生成进度消息
+        if (data.status === "running") {
+          const successfulFiles = data.successful_files || 0;
+          const totalFiles = data.total_files || 0;
+          let step = 0;
+          let message = "";
+
+          if (successfulFiles === totalFiles && totalFiles > 0) {
+            if (data.task_index) {
+              step = 2;
+              message = `正在分析数据模型 (${successfulFiles}/${totalFiles})`;
+            } else {
+              step = 1;
+              message = "正在创建知识库...";
+            }
+          } else if (successfulFiles > 0) {
+            step = 0;
+            message = `正在扫描代码文件 (${successfulFiles}/${totalFiles})`;
+          }
+
+          // 如果在步骤3,尝试获取deepwiki进度
+          if (step === 3 && data.deepwiki_task_id) {
+            try {
+              const deepwikiResponse = await fetch(
+                `http://localhost:8001/api/analyze/local/${data.deepwiki_task_id}/status`
+              );
+              if (deepwikiResponse.ok) {
+                const deepwikiData = await deepwikiResponse.json();
+                if (deepwikiData.progress !== undefined) {
+                  message = `${deepwikiData.current_stage || "正在生成文档"} (${deepwikiData.progress}%)`;
+                }
+              }
+            } catch (e) {
+              console.error("获取deepwiki进度失败:", e);
+            }
+          }
+
+          setProgressMessage(message);
+        } else if (data.status === "pending") {
+          setProgressMessage("任务等待中...");
+        } else if (data.status === "completed" || data.status === "failed") {
+          // 任务已完成或失败,清空进度消息
+          setProgressMessage("");
+        }
+      }
+    } catch (err) {
+      console.error("检查任务状态失败:", err);
+    }
+  };
 
   // 加载README文档
   const loadReadmeContent = async (taskId: number) => {
@@ -382,14 +448,29 @@ const MainContentComponent = ({
     }
   };
 
-  // 当taskId改变时加载README
+  // 当taskId改变时加载README和检查状态
   useEffect(() => {
     if (taskId) {
       loadReadmeContent(taskId);
+      checkTaskStatus(taskId);
+
+      // 每5秒检查一次状态
+      const interval = setInterval(async () => {
+        // 先检查当前状态,如果已完成则停止轮询
+        if (taskStatus && (taskStatus.status === "completed" || taskStatus.status === "failed")) {
+          clearInterval(interval);
+          return;
+        }
+        await checkTaskStatus(taskId);
+      }, 5000);
+
+      return () => clearInterval(interval);
     } else {
       setMarkdownContent("");
+      setTaskStatus(null);
+      setProgressMessage("");
     }
-  }, [taskId]);
+  }, [taskId, taskStatus?.status]);
 
   // 滚动到指定的标题位置 - 使用 instant 以提高性能
   const scrollToSection = useCallback((sectionId: string) => {
@@ -533,6 +614,61 @@ const MainContentComponent = ({
                 : "这是一个基于 Python 的 Web 应用程序，采用 Flask 框架构建。本应用提供了完整的用户认证系统和内容管理功能，采用现代化的架构设计和最佳实践。"}
             </p>
           </div>
+
+          {/* 任务进度 - 只在running状态显示 */}
+          {taskStatus && taskStatus.status === "running" && progressMessage && (
+            <Card className="p-6 bg-blue-50 border-blue-200">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-blue-900">分析进度</h3>
+                  <Badge className="bg-blue-600">进行中</Badge>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-blue-700">{progressMessage}</span>
+                    <span className="font-medium text-blue-900">
+                      {taskStatus.successful_files || 0}/{taskStatus.total_files || 0} 文件
+                    </span>
+                  </div>
+
+                  {/* 进度条 */}
+                  <div className="w-full bg-blue-200 rounded-full h-2">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                      style={{
+                        width: `${
+                          taskStatus.total_files > 0
+                            ? Math.round((taskStatus.successful_files / taskStatus.total_files) * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* 步骤说明 */}
+                <div className="text-xs text-blue-600 space-y-1">
+                  <p>📋 步骤0: 扫描代码文件 → 步骤1: 创建知识库 → 步骤2: 分析数据模型 → 步骤3: 生成文档</p>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* 文档生成状态 */}
+          {taskStatus && taskStatus.status === "completed" && !markdownContent && (
+            <Card className="p-6 bg-yellow-50 border-yellow-200">
+              <div className="flex items-center space-x-3">
+                <div className="text-yellow-600 text-2xl">⚠️</div>
+                <div>
+                  <h3 className="font-semibold text-yellow-900">文档生成中</h3>
+                  <p className="text-sm text-yellow-700 mt-1">
+                    代码分析已完成,正在生成项目文档...请稍候刷新页面查看
+                  </p>
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* 关键指标 */}
           <div>

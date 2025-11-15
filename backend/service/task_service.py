@@ -648,16 +648,98 @@ async def execute_step_3_generate_document_structure(task_id: int, external_file
     logger.info(f"开始执行步骤3: 生成文档结构 - 任务ID: {task_id}")
 
     try:
+        # 检查external_file_path是否已经是deepwiki的上传路径
+        # 如果是本地路径,需要先上传到deepwiki
+        deepwiki_path = external_file_path
+
+        # 判断是否需要上传: 如果路径包含本地目录标识,则需要上传
+        needs_upload = (
+            external_file_path.startswith("data/repos/") or
+            external_file_path.startswith("./data/repos/") or
+            "/data/repos/" in external_file_path
+        )
+
+        if needs_upload:
+            logger.info(f"检测到本地路径,需要上传到deepwiki: {external_file_path}")
+
+            # 将本地路径转换为绝对路径
+            from pathlib import Path
+            if not os.path.isabs(external_file_path):
+                current_file = Path(__file__).resolve()
+                backend_dir = current_file.parent.parent
+                local_path = (backend_dir / external_file_path).resolve()
+            else:
+                local_path = Path(external_file_path)
+
+            logger.info(f"本地绝对路径: {local_path}")
+
+            # 打包成zip并上传到deepwiki
+            import tempfile
+            import zipfile
+            import requests
+
+            with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
+                zip_path = tmp_zip.name
+
+                # 创建zip文件
+                logger.info(f"正在打包代码仓库: {local_path}")
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for root, dirs, files in os.walk(local_path):
+                        # 跳过隐藏目录和常见的忽略目录
+                        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__', 'venv', '.venv']]
+
+                        for file in files:
+                            if file.startswith('.'):
+                                continue
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, local_path)
+                            zipf.write(file_path, arcname)
+
+                logger.info(f"代码仓库打包完成: {zip_path}")
+
+                # 上传到deepwiki
+                readme_api_base_url = os.getenv("README_API_BASE_URL", "http://localhost:8001")
+                upload_url = f"{readme_api_base_url}/api/upload/zip"
+
+                logger.info(f"正在上传到deepwiki: {upload_url}")
+
+                try:
+                    with open(zip_path, 'rb') as f:
+                        files = {'file': (f'{local_path.name}.zip', f, 'application/x-zip-compressed')}
+                        headers = {'accept': 'application/json'}
+                        response = requests.post(upload_url, files=files, headers=headers, timeout=60)
+
+                        if response.status_code == 200:
+                            upload_result = response.json()
+                            if upload_result.get("success"):
+                                deepwiki_path = upload_result.get("file_path")
+                                logger.info(f"上传成功,deepwiki路径: {deepwiki_path}")
+                            else:
+                                error_msg = upload_result.get('message', '未知错误')
+                                logger.error(f"上传失败: {error_msg}")
+                                return {"success": False, "message": f"上传到deepwiki失败: {error_msg}"}
+                        else:
+                            logger.error(f"上传请求失败,状态码: {response.status_code}")
+                            return {"success": False, "message": f"上传到deepwiki失败,状态码: {response.status_code}"}
+                finally:
+                    # 清理临时文件
+                    try:
+                        os.unlink(zip_path)
+                    except:
+                        pass
+        else:
+            logger.info(f"使用已有的deepwiki路径: {deepwiki_path}")
+
         # 1. 调用外部README API生成文档结构
         logger.info("调用外部README API生成文档结构...")
 
-        logger.info(f"传递给README API的路径: {external_file_path}")
+        logger.info(f"传递给README API的路径: {deepwiki_path}")
 
         # 从环境变量或配置中获取README API基础URL
         readme_api_base_url = os.getenv("README_API_BASE_URL", "http://localhost:80111")
 
         request_data = {
-            "local_path": external_file_path,
+            "local_path": deepwiki_path,  # 使用转换后的deepwiki路径
             "generate_readme": True,
             "analyze_dependencies": True,
             "generate_architecture_diagram": True,
@@ -945,14 +1027,13 @@ async def run_task(task_id: int, external_file_path: str):
             step3_result = await execute_step_3_generate_document_structure(task_id, external_file_path)
 
             if not step3_result["success"]:
-                logger.error(f"步骤3失败: {step3_result['message']}")
-                if task_obj:
-                    task_obj.status = "failed"
-                    task_obj.end_time = datetime.now()
-                    db.commit()
-                return {"status": "error", "message": f"步骤3失败: {step3_result['message']}"}
-
-            logger.info(f"步骤3完成: {step3_result['message']}")
+                logger.warning(f"步骤3失败(不影响整体任务): {step3_result['message']}")
+                # 步骤3失败不影响整体任务状态,仍然标记为完成
+                # 用户可以查看文件分析结果,只是没有生成的文档
+                step3_result["success"] = True
+                step3_result["message"] = f"文档生成失败,但文件分析已完成: {step3_result.get('message', '未知错误')}"
+            else:
+                logger.info(f"步骤3完成: {step3_result['message']}")
 
             # ========== 所有步骤完成 ==========
 
