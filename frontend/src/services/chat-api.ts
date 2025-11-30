@@ -1,10 +1,49 @@
 const CHAT_BAST_URL = "/code_chat/api";
 
+export interface Conversation {
+    id: string;
+    session_id: string;
+    title: string;
+    created_at: string;
+    updated_at: string;
+    unread_count: number;
+}
+
 export const chatApi = {
-    
+    // 获取会话的所有对话列表
+    // 注意：claude-agent-sdk 目前没有实现此 API，暂时禁用
+    getConversations: async (sessionId: string): Promise<Conversation[]> => {
+        // const response = await fetch(`${CHAT_BAST_URL}/chat/${sessionId}/conversations`, {
+        //     method: 'GET',
+        //     headers: {
+        //         'accept': 'application/json',
+        //     },
+        // });
+
+        // if (!response.ok) {
+        //     throw new Error(`Failed to fetch conversations: ${response.status}`);
+        // }
+
+        // return await response.json();
+
+        // 暂时返回空数组
+        return [];
+    },
+
+    // 获取未读消息总数
+    getUnreadCount: async (sessionId: string): Promise<number> => {
+        try {
+            const conversations = await chatApi.getConversations(sessionId);
+            return conversations.reduce((total, conv) => total + conv.unread_count, 0);
+        } catch (error) {
+            console.error('Failed to get unread count:', error);
+            return 0;
+        }
+    },
+
     sendMessage: async (
-        sessionId: string, 
-        query: string, 
+        sessionId: string,
+        query: string,
         conversationId: string,
         onEvent?: (event: string, data: any) => void
     ) => {

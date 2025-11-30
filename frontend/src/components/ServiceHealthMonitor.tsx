@@ -15,6 +15,7 @@ interface ServiceStatus {
   responseTime?: number;
   error?: string;
   warning?: string;
+  details?: string; // 额外的详细信息
 }
 
 const SERVICES = [
@@ -23,6 +24,13 @@ const SERVICES = [
     url: "http://localhost:8000/health",
     key: "backend",
     checkBusy: true, // 需要检查是否繁忙
+  },
+  {
+    name: "Celery Worker",
+    url: "http://localhost:8000/celery/health",
+    key: "celery",
+    checkBusy: false,
+    showDetails: true, // 显示详细信息
   },
   {
     name: "本地 RAG 服务",
@@ -57,10 +65,10 @@ export default function ServiceHealthMonitor() {
   const checkServiceHealth = async (service: typeof SERVICES[0]) => {
     const startTime = Date.now();
 
-    // 第一次尝试 - 20秒超时
+    // 第一次尝试 - 5秒超时（减少等待时间）
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 增加到20秒
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 减少到5秒
 
       const response = await fetch(service.url, {
         method: "GET",
@@ -73,14 +81,28 @@ export default function ServiceHealthMonitor() {
       const responseTime = Date.now() - startTime;
 
       if (response.ok) {
-        // 响应时间超过10秒,显示警告但仍标记为正常
-        if (responseTime > 10000) {
+        // 如果是Celery服务,解析详细信息
+        let details = undefined;
+        if (service.showDetails) {
+          try {
+            const data = await response.json();
+            if (data.total_workers !== undefined) {
+              details = `${data.total_workers} workers, ${data.total_active_tasks || 0} 活跃任务`;
+            }
+          } catch (e) {
+            // 忽略JSON解析错误
+          }
+        }
+
+        // 响应时间超过3秒,显示警告但仍标记为正常
+        if (responseTime > 3000) {
           return {
             name: service.name,
             url: service.url,
             status: "healthy" as const,
             responseTime,
             warning: `响应较慢 (${Math.round(responseTime/1000)}s)`,
+            details,
           };
         }
 
@@ -89,6 +111,7 @@ export default function ServiceHealthMonitor() {
           url: service.url,
           status: "healthy" as const,
           responseTime,
+          details,
         };
       } else {
         return {
@@ -104,9 +127,9 @@ export default function ServiceHealthMonitor() {
       // 如果第一次超时,且是后端服务,尝试第二次(快速检查)
       if (error instanceof Error && error.name === 'AbortError' && service.checkBusy) {
         try {
-          // 第二次尝试 - 5秒快速检查
+          // 第二次尝试 - 3秒快速检查
           const controller2 = new AbortController();
-          const timeoutId2 = setTimeout(() => controller2.abort(), 5000);
+          const timeoutId2 = setTimeout(() => controller2.abort(), 3000);
 
           const response2 = await fetch(service.url, {
             method: "GET",
@@ -145,7 +168,7 @@ export default function ServiceHealthMonitor() {
 
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
-          errorMessage = "请求超时 (>20s)";
+          errorMessage = "请求超时 (>5s)";
         } else if (error.message.includes('Failed to fetch')) {
           errorMessage = "无法连接";
         } else {
@@ -158,7 +181,7 @@ export default function ServiceHealthMonitor() {
         url: service.url,
         status: "unhealthy" as const,
         error: errorMessage,
-        responseTime: responseTime > 20000 ? undefined : responseTime,
+        responseTime: responseTime > 5000 ? undefined : responseTime,
       };
     }
   };
@@ -171,13 +194,18 @@ export default function ServiceHealthMonitor() {
   };
 
   useEffect(() => {
-    // 初始检查
-    checkAllServices();
+    // 延迟2秒后再进行初始检查，避免阻塞页面加载
+    const initialCheckTimeout = setTimeout(() => {
+      checkAllServices();
+    }, 2000);
 
     // 每60秒检查一次(降低频率,减少后端负担)
     const interval = setInterval(checkAllServices, 60000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialCheckTimeout);
+      clearInterval(interval);
+    };
   }, []);
 
   // 当打开面板时,立即刷新一次
@@ -275,6 +303,11 @@ export default function ServiceHealthMonitor() {
                     {service.responseTime && (
                       <p className="text-xs text-muted-foreground">
                         响应时间: {service.responseTime}ms
+                      </p>
+                    )}
+                    {service.details && (
+                      <p className="text-xs text-blue-600 font-medium">
+                        {service.details}
                       </p>
                     )}
                     {service.error && (

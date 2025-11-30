@@ -36,6 +36,7 @@ interface MainContentProps {
   projectName?: string;
   taskStatistics?: TaskStatistics | null;
   taskId?: number | null;
+  repositoryInfo?: any; // 新增：仓库信息
 }
 
 // 生成标题ID（与Sidebar中的逻辑保持一致）
@@ -331,6 +332,7 @@ const MainContentComponent = ({
   projectName,
   taskStatistics,
   taskId,
+  repositoryInfo,
 }: MainContentProps) => {
   const [markdownContent, setMarkdownContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
@@ -364,11 +366,12 @@ const MainContentComponent = ({
   // 检查任务状态
   const checkTaskStatus = async (taskId: number) => {
     try {
+      // 使用新的详细API
       const response = await fetch(
-        `http://localhost:8000/api/repository/analysis-tasks/${taskId}`
+        `http://localhost:8000/api/repository/analysis-tasks/detail/${taskId}`
       );
       const result = await response.json();
-      const data = result.tasks && result.tasks.length > 0 ? result.tasks[0] : null;
+      const data = result.task;
 
       if (data) {
         setTaskStatus(data);
@@ -377,13 +380,19 @@ const MainContentComponent = ({
         if (data.status === "running") {
           const successfulFiles = data.successful_files || 0;
           const totalFiles = data.total_files || 0;
+          const analysisSuccess = data.analysis_success_files || 0;
+          const analysisTotal = data.analysis_total_files || 0;
           let step = 0;
           let message = "";
 
           if (successfulFiles === totalFiles && totalFiles > 0) {
-            if (data.task_index) {
+            if (analysisTotal > 0) {
+              // 正在分析数据模型
               step = 2;
-              message = `正在分析数据模型 (${successfulFiles}/${totalFiles})`;
+              message = `正在分析数据模型 (${analysisSuccess}/${analysisTotal} 文件, ${data.analysis_progress || 0}%)`;
+            } else if (data.task_index) {
+              step = 1;
+              message = "正在创建知识库...";
             } else {
               step = 1;
               message = "正在创建知识库...";
@@ -436,15 +445,77 @@ const MainContentComponent = ({
         setMarkdownContent(response.readme.content);
         console.log("README content loaded successfully");
       } else {
-        setError("未找到README文档");
+        // README 不存在，触发生成
+        console.log("README not found, triggering generation...");
+        setProgressMessage("正在生成文档，请稍候...");
+        await triggerReadmeGeneration(taskId);
+      }
+    } catch (err: any) {
+      console.error("Error loading README:", err);
+
+      // 如果是 404 错误，触发生成
+      if (err.message && err.message.includes("404")) {
+        console.log("README not found (404), triggering generation...");
+        setProgressMessage("正在生成文档，请稍候...");
+        await triggerReadmeGeneration(taskId);
+      } else {
+        setError("加载README文档失败");
+        setMarkdownContent("");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 触发 README 生成
+  const triggerReadmeGeneration = async (taskId: number) => {
+    try {
+      // 获取仓库信息
+      if (!repositoryInfo) {
+        console.error("Repository info not available");
+        setError("无法生成文档：仓库信息缺失");
+        return;
+      }
+
+      const md5Hash = repositoryInfo.local_path?.split("/").pop();
+      if (!md5Hash) {
+        console.error("Cannot extract MD5 hash from local_path");
+        setError("无法生成文档：路径信息错误");
+        return;
+      }
+
+      console.log("Triggering README generation for MD5:", md5Hash);
+
+      // 调用压缩上传 API
+      const response = await fetch(
+        `http://localhost:8000/api/repository/upload/compress-and-upload/${md5Hash}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const result = await response.json();
+
+      if (result.status === "success") {
+        console.log("README generation triggered successfully");
+        setProgressMessage("文档生成中，请等待约30秒...");
+
+        // 30秒后重新加载
+        setTimeout(() => {
+          loadReadmeContent(taskId);
+        }, 30000);
+      } else {
+        console.error("Failed to trigger README generation:", result);
+        setError("生成文档失败：" + (result.message || "未知错误"));
         setMarkdownContent("");
       }
     } catch (err) {
-      console.error("Error loading README:", err);
-      setError("加载README文档失败");
+      console.error("Error triggering README generation:", err);
+      setError("触发文档生成失败");
       setMarkdownContent("");
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -624,15 +695,14 @@ const MainContentComponent = ({
                   <Badge className="bg-blue-600">进行中</Badge>
                 </div>
 
+                {/* 阶段1: 向量化进度 */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-sm">
-                    <span className="text-blue-700">{progressMessage}</span>
+                    <span className="text-blue-700 font-medium">📚 阶段1: 向量化知识库</span>
                     <span className="font-medium text-blue-900">
                       {taskStatus.successful_files || 0}/{taskStatus.total_files || 0} 文件
                     </span>
                   </div>
-
-                  {/* 进度条 */}
                   <div className="w-full bg-blue-200 rounded-full h-2">
                     <div
                       className="bg-blue-600 h-2 rounded-full transition-all duration-300"
@@ -645,6 +715,46 @@ const MainContentComponent = ({
                       }}
                     />
                   </div>
+                  {taskStatus.successful_files === taskStatus.total_files && taskStatus.total_files > 0 && (
+                    <div className="text-xs text-green-600">✅ 向量化完成</div>
+                  )}
+                </div>
+
+                {/* 阶段2: 数据模型分析进度 */}
+                {taskStatus.analysis_total_files > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-blue-700 font-medium">🔍 阶段2: 数据模型分析</span>
+                      <span className="font-medium text-blue-900">
+                        {taskStatus.analysis_success_files || 0}/{taskStatus.analysis_total_files || 0} 文件
+                      </span>
+                    </div>
+                    <div className="w-full bg-blue-200 rounded-full h-2">
+                      <div
+                        className="bg-green-600 h-2 rounded-full transition-all duration-300"
+                        style={{
+                          width: `${
+                            taskStatus.analysis_total_files > 0
+                              ? Math.round((taskStatus.analysis_success_files / taskStatus.analysis_total_files) * 100)
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                    <div className="text-xs text-blue-600">
+                      {taskStatus.analysis_pending_files > 0 && (
+                        <span>⏳ 待处理: {taskStatus.analysis_pending_files} 个文件</span>
+                      )}
+                      {taskStatus.analysis_failed_files > 0 && (
+                        <span className="ml-3 text-red-600">❌ 失败: {taskStatus.analysis_failed_files} 个文件</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* 当前状态消息 */}
+                <div className="text-sm text-blue-700 bg-blue-100 rounded p-2">
+                  {progressMessage}
                 </div>
 
                 {/* 步骤说明 */}

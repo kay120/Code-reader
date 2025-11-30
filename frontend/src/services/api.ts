@@ -579,10 +579,16 @@ export class ApiService {
             id: number;
             task_id: number;
             file_path: string;
+            file_name: string;
             file_type: string;
-            file_size: number;
-            analysis_status: string;
-            created_at: string;
+            language: string;
+            analysis_version: string;
+            status: string;  // ✅ 正确的字段名
+            code_lines: number;
+            file_analysis: string;
+            dependencies: string;
+            analysis_timestamp: string;
+            error_message: string;
         }>;
         statistics?: any;
     }> {
@@ -757,7 +763,7 @@ export class ApiService {
     }> {
         const formData = new FormData();
         formData.append('zip_file', zipFile);
-        
+
         const response = await fetch(`${this.baseUrl}/api/v1/tasks/create-task-from-zip`, {
             method: "POST",
             body: formData,
@@ -850,6 +856,53 @@ export class ApiService {
 
         const result = await response.json();
         console.log(`Get analysis task response:`, result);
+        return result;
+    }
+
+
+    // 获取分析任务详细信息(包含进度和当前处理文件)
+    async getAnalysisTaskDetail(taskId: number): Promise<{
+        status: string;
+        message: string;
+        task?: {
+            id: number;
+            repository_id: number;
+            total_files: number;
+            successful_files: number;
+            failed_files: number;
+            code_lines: number;
+            module_count: number;
+            status: string;
+            current_file?: string;
+            start_time?: string;
+            end_time?: string;
+            // 向量化阶段
+            vectorize_progress?: number;
+            // 数据模型分析阶段
+            analysis_total_files?: number;
+            analysis_success_files?: number;
+            analysis_pending_files?: number;
+            analysis_failed_files?: number;
+            analysis_progress?: number;
+            task_index?: string;
+        };
+    }> {
+        const response = await fetch(
+            `${this.baseUrl}/api/repository/analysis-tasks/detail/${taskId}`,
+            {
+                method: "GET",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+            }
+        );
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        console.log("Get analysis task detail response:", result);
         return result;
     }
 
@@ -1173,6 +1226,48 @@ export class ApiService {
         }
     }
 
+    // 重新分析仓库
+    async reanalyzeRepository(repositoryId: number): Promise<{
+        status: string;
+        message?: string;
+        repository_id?: number;
+        task_id?: number;
+        repository_name?: string;
+    }> {
+        try {
+            console.log(`触发仓库 ${repositoryId} 的重新分析...`);
+
+            const response = await fetch(
+                `${this.baseUrl}/api/analysis/repository/${repositoryId}/reanalyze`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                console.error("重新分析仓库失败:", errorData);
+                return {
+                    status: "error",
+                    message: errorData.message || "重新分析仓库失败",
+                };
+            }
+
+            const data = await response.json();
+            console.log("重新分析仓库成功:", data);
+            return data;
+        } catch (error) {
+            console.error("重新分析仓库时发生错误:", error);
+            return {
+                status: "error",
+                message: `重新分析仓库时发生错误: ${error}`,
+            };
+        }
+    }
+
     // 触发知识库创建flow
     async createKnowledgeBaseFlow(taskId: number): Promise<{
         status: string;
@@ -1426,13 +1521,13 @@ export class ApiService {
                 local_path: modifiedLocalPath,
                 language: "zh",
                 provider: "openai",
-                model: "kimi-k2",
+                model: "kimi-k2-0905-preview",  // 使用完整的模型名称
                 export_format: "markdown",
                 analysis_depth: "detailed",
                 include_code_examples: true,
                 generate_architecture_diagram: true,
             };
-            
+
 
             const response = await fetch(
                 `${readmeApiBaseUrl}/api/analyze/local`,
@@ -1497,7 +1592,7 @@ export class ApiService {
                     message: "README API Base URL 未配置",
                 };
             }
-                
+
 
             console.log(`检查文档生成状态，任务ID: ${readmeApiTaskId}`);
 
@@ -1780,6 +1875,10 @@ export const api = {
         vectorField?: string
     ) => apiService.addDocumentsToIndex(documents, indexName, vectorField),
     checkRAGHealth: () => apiService.checkRAGHealth(),
+
+    // 重新分析仓库
+    reanalyzeRepository: (repositoryId: number) =>
+        apiService.reanalyzeRepository(repositoryId),
 
     // 知识库创建flow
     createKnowledgeBaseFlow: (taskId: number) =>

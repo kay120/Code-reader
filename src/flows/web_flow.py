@@ -1281,7 +1281,7 @@ async def analyze_data_model(
 
         logger.info(f"📁 找到 {len(files)} 个文件需要分析")
 
-        # 2. 逐个调用单文件分析接口
+        # 2. 逐个调用单文件分析接口(添加延迟以降低资源占用)
         total_files = len(files)
         successful_files = 0
         failed_files = 0
@@ -1298,6 +1298,12 @@ async def analyze_data_model(
                 continue
 
             logger.info(f"📝 [{i}/{total_files}] 分析文件: {file_path} (ID: {file_id})")
+
+            # 添加延迟以降低资源占用(除了第一个文件)
+            if i > 1:
+                sleep_time = config.analysis_sleep_between_files
+                logger.debug(f"⏱️  等待 {sleep_time}秒 以降低资源占用...")
+                await asyncio.sleep(sleep_time)
 
             # 调用进度回调
             if progress_callback:

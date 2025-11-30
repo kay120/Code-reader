@@ -242,10 +242,10 @@ class MermaidToSvgConverter:
     def mermaid_to_svg(self, mermaid_code: str) -> Optional[str]:
         """
         将 mermaid 代码转换为 SVG（自动选择方法）
-        
+
         Args:
             mermaid_code: Mermaid 图表代码
-            
+
         Returns:
             SVG 字符串，失败返回 None
         """
@@ -254,6 +254,13 @@ class MermaidToSvgConverter:
             svg = self.mermaid_to_svg_cli(mermaid_code)
             if svg:
                 return svg
+
+        # CLI 失败时使用 Kroki API 作为备选
+        svg = self.mermaid_to_svg_kroki(mermaid_code)
+        if svg:
+            return svg
+
+        return None
     
     def convert_markdown(
         self, 

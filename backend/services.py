@@ -1384,12 +1384,12 @@ class RepositoryService:
             # 一次性查询所有仓库的最新任务(提升性能)
             repo_ids = [repo.id for repo in repositories]
             if repo_ids:
-                # 使用子查询找出每个repository的最新任务ID
+                # 使用子查询找出每个repository的最新任务（按start_time最大值）
                 from sqlalchemy import func
                 subquery = (
                     db.query(
                         AnalysisTask.repository_id,
-                        func.max(AnalysisTask.id).label('max_id')
+                        func.max(AnalysisTask.start_time).label('max_start_time')
                     )
                     .filter(AnalysisTask.repository_id.in_(repo_ids))
                     .group_by(AnalysisTask.repository_id)
@@ -1399,7 +1399,11 @@ class RepositoryService:
                 # 查询这些最新任务的完整信息
                 latest_tasks = (
                     db.query(AnalysisTask)
-                    .join(subquery, AnalysisTask.id == subquery.c.max_id)
+                    .join(
+                        subquery,
+                        (AnalysisTask.repository_id == subquery.c.repository_id) &
+                        (AnalysisTask.start_time == subquery.c.max_start_time)
+                    )
                     .all()
                 )
 
@@ -1551,6 +1555,9 @@ class RepositoryService:
         """
         import os
         import shutil
+        import requests
+        from pathlib import Path
+        from config import settings
 
         if db is None:
             db = SessionLocal()
@@ -1571,6 +1578,7 @@ class RepositoryService:
 
             # 保存本地路径用于删除文件
             local_path = repository.local_path
+            repo_name = repository.name
 
             if soft_delete:
                 # 软删除：设置status为0
@@ -1589,28 +1597,68 @@ class RepositoryService:
             else:
                 # 硬删除：物理删除记录（注意：会级联删除相关的分析任务和文件分析记录）
                 repository_data = repository.to_dict(include_tasks=False)
+
+                # 获取所有相关的分析任务，用于删除向量数据库
+                tasks = db.query(AnalysisTask).filter(AnalysisTask.repository_id == repository_id).all()
+                task_indices = [task.task_index for task in tasks if task.task_index]
+
+                # 删除数据库记录
                 db.delete(repository)
                 db.commit()
 
-                # 删除磁盘文件
-                deleted_files = False
+                deleted_items = []
+
+                # 1. 删除磁盘文件（上传的代码）
                 if local_path and os.path.exists(local_path):
                     try:
                         shutil.rmtree(local_path)
-                        deleted_files = True
+                        deleted_items.append(f"代码文件: {local_path}")
                         logger.info(f"成功删除仓库文件: {local_path}")
                     except Exception as e:
                         logger.warning(f"删除仓库文件失败: {local_path}, 错误: {str(e)}")
 
-                logger.info(f"成功硬删除仓库ID {repository_id}")
+                # 2. 删除向量数据库（ChromaDB collections）
+                for task_index in task_indices:
+                    try:
+                        # 调用 RAG 服务的删除接口
+                        rag_url = f"{settings.RAG_BASE_URL}/collections/{task_index}"
+                        response = requests.delete(rag_url, timeout=10)
+                        if response.status_code == 200:
+                            deleted_items.append(f"向量数据库: {task_index}")
+                            logger.info(f"成功删除向量数据库: {task_index}")
+                        else:
+                            logger.warning(f"删除向量数据库失败: {task_index}, 状态码: {response.status_code}")
+                    except Exception as e:
+                        logger.warning(f"删除向量数据库失败: {task_index}, 错误: {str(e)}")
+
+                # 3. 删除 DeepWiki 生成的文档
+                # DeepWiki 文档存储在 deepwiki-open/data/uploads/ 目录下
+                # 文件名格式通常是 MD5 hash
+                try:
+                    # 从 local_path 中提取 MD5 hash（假设路径格式为 ./data/repos/hash）
+                    if local_path:
+                        path_parts = Path(local_path).parts
+                        if len(path_parts) > 0:
+                            hash_dir = path_parts[-1]  # 获取最后一个目录名（MD5 hash）
+
+                            # DeepWiki 上传目录
+                            deepwiki_upload_dir = Path("../deepwiki-open/data/uploads") / hash_dir
+                            if deepwiki_upload_dir.exists():
+                                shutil.rmtree(deepwiki_upload_dir)
+                                deleted_items.append(f"DeepWiki文档: {deepwiki_upload_dir}")
+                                logger.info(f"成功删除DeepWiki文档: {deepwiki_upload_dir}")
+                except Exception as e:
+                    logger.warning(f"删除DeepWiki文档失败, 错误: {str(e)}")
+
+                logger.info(f"成功硬删除仓库ID {repository_id}，清理项: {', '.join(deleted_items)}")
 
                 return {
                     "status": "success",
-                    "message": "仓库已物理删除" + ("，磁盘文件已清理" if deleted_files else ""),
+                    "message": f"仓库已完全删除，清理了 {len(deleted_items)} 项数据",
                     "repository_id": repository_id,
                     "delete_type": "hard",
                     "deleted_repository": repository_data,
-                    "deleted_files": deleted_files,
+                    "deleted_items": deleted_items,
                 }
 
         except SQLAlchemyError as e:
@@ -2261,14 +2309,29 @@ class AnalysisTaskService:
             db.add(new_task)
             db.commit()
             db.refresh(new_task)
-            
-            # 创建同步包装函数来运行异步任务
-            def run_task_sync(task_id,external_file_path):
-                import asyncio
-                asyncio.run(TaskService.run_task(task_id,external_file_path,))
-            
-            import threading
-            threading.Thread(target=run_task_sync, args=(new_task.id,external_file_path), daemon=True).start()
+
+            # 使用Celery异步任务处理分析(不阻塞API请求)
+            try:
+                from tasks import run_analysis_task
+
+                celery_task = run_analysis_task.delay(
+                    task_id=new_task.id,
+                    external_file_path=external_file_path
+                )
+
+                logger.info(f"✅ 分析任务已提交到Celery队列: 任务ID {new_task.id}, Celery任务ID: {celery_task.id}")
+            except Exception as celery_error:
+                logger.error(f"⚠️ 提交Celery任务失败,回退到线程模式: {str(celery_error)}")
+
+                # 如果Celery不可用,回退到线程模式
+                def run_task_sync(task_id, external_file_path):
+                    import asyncio
+                    from service.task_service import run_task
+                    asyncio.run(run_task(task_id, external_file_path))
+
+                import threading
+                threading.Thread(target=run_task_sync, args=(new_task.id, external_file_path), daemon=True).start()
+                logger.info(f"⚠️ 使用线程模式运行任务: ID {new_task.id}")
 
             logger.info(f"成功创建分析任务: ID {new_task.id}, 仓库ID {new_task.repository_id}, 状态: {task_status}")
 
@@ -3161,7 +3224,7 @@ class UploadService:
                         arcname = os.path.relpath(file_path, folder_path)
                         zipf.write(file_path, arcname)
 
-            logger.info(f"✅ 成功创建zip文件: {zip_path}")
+            logger.debug(f"✅ 成功创建zip文件: {zip_path}")
             return True
 
         except Exception as e:
@@ -3197,12 +3260,12 @@ class UploadService:
                         'file': (os.path.basename(zip_path), f, 'application/zip')
                     }
 
-                    logger.info(f"🚀 开始上传zip文件到: {upload_url}")
+                    logger.debug(f"🚀 开始上传zip文件到: {upload_url}")
                     response = await client.post(upload_url, files=files)
 
                     if response.status_code == 200:
                         result = response.json()
-                        logger.info(f"✅ zip文件上传成功: {result}")
+                        logger.debug(f"✅ zip文件上传成功")
                         return {
                             "success": True,
                             "message": "上传成功",

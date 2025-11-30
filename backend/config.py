@@ -3,11 +3,22 @@
 """
 
 import os
+from pathlib import Path
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
-# 加载环境变量
-load_dotenv()
+# 先清除可能存在的系统环境变量，确保只使用 .env 文件中的配置
+env_keys_to_clear = [
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_API_BASE',
+    'LLM_MAX_CONCURRENT', 'LLM_BATCH_SIZE', 'LLM_REQUEST_TIMEOUT', 'LLM_RETRY_DELAY'
+]
+for key in env_keys_to_clear:
+    os.environ.pop(key, None)
+
+# 加载项目根目录的 .env 文件（Code-reader/.env）
+project_root = Path(__file__).parent.parent
+env_path = project_root / '.env'
+load_dotenv(env_path, override=True)
 
 
 class Settings:
@@ -28,8 +39,9 @@ class Settings:
     DB_PASSWORD: str = os.getenv("DB_PASSWORD", "123456")
     DB_PARAMS: str = os.getenv("DB_PARAMS", "charset=utf8mb4")
     DB_ECHO: bool = bool(int(os.getenv("DB_ECHO", 0)))
-    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", 5))
-    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", 10))
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", 50))  # 进一步增加连接池大小
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", 50))  # 进一步增加溢出连接数
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", 3600))  # 连接回收时间(秒)
 
     @property
     def database_url(self) -> str:
@@ -48,10 +60,14 @@ class Settings:
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 
     # LLM 并行处理配置
-    LLM_MAX_CONCURRENT: int = int(os.getenv("LLM_MAX_CONCURRENT", 25))
-    LLM_BATCH_SIZE: int = int(os.getenv("LLM_BATCH_SIZE", 50))
+    LLM_MAX_CONCURRENT: int = int(os.getenv("LLM_MAX_CONCURRENT", 1))  # 进一步降低并发数为1
+    LLM_BATCH_SIZE: int = int(os.getenv("LLM_BATCH_SIZE", 5))  # 进一步降低批处理大小
     LLM_REQUEST_TIMEOUT: int = int(os.getenv("LLM_REQUEST_TIMEOUT", 120))
     LLM_RETRY_DELAY: int = int(os.getenv("LLM_RETRY_DELAY", 2))
+
+    # 分析任务资源限制配置
+    ANALYSIS_MAX_CONCURRENT_FILES: int = int(os.getenv("ANALYSIS_MAX_CONCURRENT_FILES", 1))  # 降低为1个文件
+    ANALYSIS_SLEEP_BETWEEN_FILES: float = float(os.getenv("ANALYSIS_SLEEP_BETWEEN_FILES", 2.0))  # 增加延迟到2秒
 
     # RAG 服务配置
     RAG_BASE_URL: str = os.getenv("RAG_BASE_URL", "")

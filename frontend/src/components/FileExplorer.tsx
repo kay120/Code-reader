@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { ChevronDown, ChevronRight, File, Folder } from "lucide-react";
 import { Button } from "./ui/button";
+import { api } from "../services/api";
 
 interface FileNode {
   name: string;
@@ -18,6 +19,8 @@ interface FileExplorerProps {
   highlightedFile?: string | null; // 新增：需要高亮的文件路径
   expandedPaths?: string[]; // 新增：需要展开的文件夹路径
   taskId?: number | null; // 新增：任务ID用于获取进度
+  completedFiles?: Set<string>; // 新增：已完成AI分析的文件路径集合
+  pendingFiles?: Set<string>; // 新增：未完成AI分析的文件路径集合
 }
 
 const mockFileTree: FileNode = {
@@ -88,6 +91,8 @@ function FileTreeNode({
   onFileSelect,
   highlightedFile,
   expandedPaths,
+  completedFiles,
+  pendingFiles,
 }: {
   node: FileNode;
   level?: number;
@@ -95,6 +100,8 @@ function FileTreeNode({
   onFileSelect: (path: string) => void;
   highlightedFile?: string | null;
   expandedPaths?: string[];
+  completedFiles?: Set<string>;
+  pendingFiles?: Set<string>;
 }) {
   // 判断是否应该展开：默认展开前2层，或者在expandedPaths中
   const shouldExpand =
@@ -110,6 +117,8 @@ function FileTreeNode({
 
   const isSelected = selectedFile === node.path;
   const isHighlighted = highlightedFile === node.path;
+  const isCompleted = node.type === "file" && completedFiles?.has(node.path);
+  const isPending = node.type === "file" && pendingFiles?.has(node.path);
 
   // 调试：打印路径匹配信息
   if (highlightedFile && node.type === "file") {
@@ -137,6 +146,10 @@ function FileTreeNode({
               ? "bg-blue-100 text-blue-700"
               : isHighlighted
               ? "bg-yellow-100 text-yellow-800 border-2 border-yellow-300"
+              : isPending
+              ? "text-yellow-600 hover:bg-yellow-50"
+              : isCompleted
+              ? "text-gray-900 hover:bg-gray-100"
               : "text-gray-700 hover:bg-gray-100"
           }
         `}
@@ -154,9 +167,31 @@ function FileTreeNode({
           </>
         )}
         {node.type === "file" && (
-          <File className="h-4 w-4 mr-2 ml-4 text-gray-500" />
+          <File
+            className={`h-4 w-4 mr-2 ml-4 ${
+              isPending
+                ? "text-yellow-500"
+                : isCompleted
+                ? "text-gray-700"
+                : "text-gray-500"
+            }`}
+          />
         )}
-        <span className="truncate">{node.name}</span>
+        <span className={`truncate ${
+          isPending
+            ? "font-medium"
+            : isCompleted
+            ? "font-normal"
+            : ""
+        }`}>
+          {node.name}
+        </span>
+        {isPending && (
+          <div
+            className="ml-2 w-2 h-2 rounded-full bg-yellow-500 animate-pulse flex-shrink-0"
+            title="AI分析中..."
+          />
+        )}
       </Button>
 
       {node.type === "folder" && isExpanded && node.children && (
@@ -170,6 +205,8 @@ function FileTreeNode({
               onFileSelect={onFileSelect}
               highlightedFile={highlightedFile}
               expandedPaths={expandedPaths}
+              completedFiles={completedFiles}
+              pendingFiles={pendingFiles}
             />
           ))}
         </div>
@@ -187,6 +224,8 @@ export function FileExplorer({
   highlightedFile,
   expandedPaths,
   taskId,
+  completedFiles,
+  pendingFiles,
 }: FileExplorerProps) {
   const [taskStatus, setTaskStatus] = useState<any>(null);
   const [progressMessage, setProgressMessage] = useState<string>("正在生成中...");
@@ -197,74 +236,67 @@ export function FileExplorer({
 
     const checkStatus = async () => {
       try {
-        console.log('[FileExplorer] 检查任务状态, taskId:', taskId);
+        console.log("[FileExplorer] 检查任务状态, taskId:", taskId);
 
-        // 添加超时控制
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
+        const result = await api.getAnalysisTaskDetail(taskId);
+        if (result.status !== "success" || !result.task) {
+          console.warn("[FileExplorer] 未获取到任务详情:", result);
+          return;
+        }
 
-        const response = await fetch(
-          `http://localhost:8000/api/repository/analysis-tasks/${taskId}`,
-          { signal: controller.signal }
-        );
+        const task = result.task;
+        setTaskStatus(task);
 
-        clearTimeout(timeoutId);
+        // 根据任务状态生成更细致的进度文案
+        if (task.status === "running") {
+          const totalFiles = task.total_files || 0;
+          const successfulFiles = task.successful_files || 0;
+          const analysisTotal = task.analysis_total_files || 0;
+          const analysisSuccess = task.analysis_success_files || 0;
+          const analysisProgress = task.analysis_progress || 0;
 
-        if (response.ok) {
-          const data = await response.json();
-          console.log('[FileExplorer] 任务状态:', data);
-          setTaskStatus(data);
+          let step = 0;
+          let message = "正在扫描代码文件...";
 
-          // 根据任务状态生成进度消息
-          if (data.status === "running") {
-            const step = data.current_step || 0;
-            const stepMessages = [
-              "正在扫描代码文件...",
-              "正在创建知识库...",
-              "正在分析数据模型...",
-              "正在生成文档结构..."
-            ];
-
-            let message = stepMessages[step] || "正在处理中...";
-
-            // 如果在步骤2(分析数据模型),显示文件分析进度
-            if (step === 2 && data.progress_percentage !== undefined) {
-              const processedFiles = data.successful_files || 0;
-              const totalFiles = data.total_files || 0;
-              message = `正在分析文件 (${processedFiles}/${totalFiles})`;
-            }
-
-            // 如果在步骤3(生成文档),尝试获取deepwiki进度
-            if (step === 3 && data.deepwiki_task_id) {
-              try {
-                const deepwikiResponse = await fetch(
-                  `http://localhost:8001/api/analyze/local/${data.deepwiki_task_id}/status`
-                );
-                if (deepwikiResponse.ok) {
-                  const deepwikiData = await deepwikiResponse.json();
-                  if (deepwikiData.progress !== undefined) {
-                    message = `${deepwikiData.current_stage || "正在生成文档"} (${deepwikiData.progress}%)`;
-                  }
-                }
-              } catch (e) {
-                console.error("获取deepwiki进度失败:", e);
-              }
-            }
-
-            setProgressMessage(message);
-            console.log('[FileExplorer] 进度消息:', message);
-          } else if (data.status === "pending") {
-            setProgressMessage("任务等待中...");
-          } else if (data.status === "completed") {
-            console.log('[FileExplorer] 任务已完成');
+          // 步骤0: 扫描代码文件
+          if (totalFiles > 0 && successfulFiles < totalFiles) {
+            message = `正在扫描代码文件 (${successfulFiles}/${totalFiles})`;
+            step = 0;
           }
+          // 步骤1: 创建知识库(文件全部扫描完成,但还没开始数据模型分析)
+          else if (totalFiles > 0 && successfulFiles === totalFiles && analysisTotal === 0) {
+            message = "正在创建知识库...";
+            step = 1;
+          }
+          // 步骤2: 分析数据模型
+          else if (analysisTotal > 0 && analysisSuccess < analysisTotal) {
+            message = `正在分析数据模型 (${analysisSuccess}/${analysisTotal} 文件, ${analysisProgress}%)`;
+            step = 2;
+          }
+          // 步骤3: 生成文档/文件树
+          else {
+            message = "正在生成文档结构和文件树...";
+            step = 3;
+          }
+
+          // 保存带有当前步骤的信息,方便下面的进度条使用
+          setTaskStatus({
+            ...task,
+            current_step: step,
+            progress_percentage: step === 2 ? analysisProgress : undefined,
+          });
+
+          setProgressMessage(message);
+          console.log("[FileExplorer] 进度消息:", message);
+        } else if (task.status === "pending") {
+          setProgressMessage("任务等待开始...");
+        } else if (task.status === "completed") {
+          console.log("[FileExplorer] 任务已完成");
+        } else if (task.status === "failed") {
+          setProgressMessage("分析任务失败, 请检查后台日志");
         }
-      } catch (err: any) {
-        if (err.name === 'AbortError') {
-          console.warn('[FileExplorer] 请求超时');
-        } else {
-          console.error("[FileExplorer] 检查任务状态失败:", err);
-        }
+      } catch (err) {
+        console.error("[FileExplorer] 检查任务状态失败:", err);
       }
     };
 
@@ -355,6 +387,8 @@ export function FileExplorer({
             onFileSelect={onFileSelect}
             highlightedFile={highlightedFile}
             expandedPaths={expandedPaths}
+            completedFiles={completedFiles}
+            pendingFiles={pendingFiles}
           />
         ))
       ) : (

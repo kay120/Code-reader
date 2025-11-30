@@ -13,6 +13,7 @@ import {
 import { Button } from "./ui/button";
 import { api } from "../services/api";
 import { useProject } from "../contexts/ProjectContext";
+import { chatApi } from "../services/chat-api";
 
 interface SidebarProps {
   activeSection: string;
@@ -150,6 +151,7 @@ export function Sidebar({
   );
   const [taskStatus, setTaskStatus] = useState<any>(null);
   const [progressMessage, setProgressMessage] = useState<string>("正在生成中...");
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // 加载README文档
   const loadReadmeContent = async (taskId: number) => {
@@ -180,86 +182,68 @@ export function Sidebar({
   // 检查任务状态并更新进度消息
   const checkTaskStatus = async (taskId: number) => {
     try {
-      console.log('[DeepWikiSidebar] 检查任务状态, taskId:', taskId);
+      console.log("[DeepWikiSidebar] 检查任务状态, taskId:", taskId);
 
-      // 添加超时控制
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
+      const result = await api.getAnalysisTaskDetail(taskId);
+      if (result.status !== "success" || !result.task) {
+        console.warn("[DeepWikiSidebar] 未获取到任务详情:", result);
+        return;
+      }
 
-      const response = await fetch(
-        `http://localhost:8000/api/repository/analysis-tasks/${taskId}`,
-        { signal: controller.abort }
-      );
+      const data = result.task;
+      console.log("[DeepWikiSidebar] 任务状态:", data);
+      setTaskStatus(data);
 
-      clearTimeout(timeoutId);
+      // 根据任务状态生成进度消息
+      if (data.status === "running") {
+        const successfulFiles = data.successful_files || 0;
+        const totalFiles = data.total_files || 0;
+        const analysisTotal = data.analysis_total_files || 0;
+        const analysisSuccess = data.analysis_success_files || 0;
+        const analysisProgress = data.analysis_progress || 0;
 
-      if (response.ok) {
-        const result = await response.json();
-        console.log('[DeepWikiSidebar] API响应:', result);
+        let step = 0;
+        let message = "正在扫描代码文件...";
 
-        // API返回的是任务列表,需要提取第一个任务
-        const data = result.tasks && result.tasks.length > 0 ? result.tasks[0] : null;
-        console.log('[DeepWikiSidebar] 任务状态:', data);
-        setTaskStatus(data);
-
-        // 根据任务状态生成进度消息
-        if (data && data.status === "running") {
-          // 根据文件进度和task_index判断当前步骤
-          const successfulFiles = data.successful_files || 0;
-          const totalFiles = data.total_files || 0;
-
-          let step = 0;
-          let message = "正在扫描代码文件...";
-
-          if (successfulFiles === totalFiles && totalFiles > 0) {
-            // 文件扫描完成
-            if (data.task_index) {
-              step = 2; // 有索引说明知识库已创建,在分析数据模型
-              message = `正在分析数据模型 (${successfulFiles}/${totalFiles})`;
-            } else {
-              step = 1; // 正在创建知识库
-              message = "正在创建知识库...";
-            }
-          } else if (successfulFiles > 0) {
-            // 正在扫描文件
-            step = 0;
-            message = `正在扫描代码文件 (${successfulFiles}/${totalFiles})`;
-          }
-
-          // 更新taskStatus,添加current_step字段
-          setTaskStatus({ ...data, current_step: step });
-
-          // 如果在步骤3(生成文档),尝试获取deepwiki进度
-          if (step === 3 && data.deepwiki_task_id) {
-            try {
-              const deepwikiResponse = await fetch(
-                `http://localhost:8001/api/analyze/local/${data.deepwiki_task_id}/status`
-              );
-              if (deepwikiResponse.ok) {
-                const deepwikiData = await deepwikiResponse.json();
-                if (deepwikiData.progress !== undefined) {
-                  message = `${deepwikiData.current_stage || "正在生成文档"} (${deepwikiData.progress}%)`;
-                }
-              }
-            } catch (e) {
-              console.error("获取deepwiki进度失败:", e);
-            }
-          }
-
-          setProgressMessage(message);
-          console.log('[DeepWikiSidebar] 进度消息:', message);
-        } else if (data.status === "pending") {
-          setProgressMessage("任务等待中...");
-        } else if (data.status === "completed") {
-          console.log('[DeepWikiSidebar] 任务已完成');
+        // 步骤0: 扫描代码文件
+        if (totalFiles > 0 && successfulFiles < totalFiles) {
+          step = 0;
+          message = `正在扫描代码文件 (${successfulFiles}/${totalFiles})`;
         }
+        // 步骤1: 创建知识库
+        else if (totalFiles > 0 && successfulFiles === totalFiles && analysisTotal === 0) {
+          step = 1;
+          message = "正在创建知识库...";
+        }
+        // 步骤2: 分析数据模型
+        else if (analysisTotal > 0 && analysisSuccess < analysisTotal) {
+          step = 2;
+          message = `正在分析数据模型 (${analysisSuccess}/${analysisTotal} 文件, ${analysisProgress}%)`;
+        }
+        // 步骤3: 生成文档
+        else {
+          step = 3;
+          message = "正在生成文档 (步骤 4/4)...";
+        }
+
+        // 更新taskStatus, 添加current_step字段, 便于其他组件使用
+        setTaskStatus({
+          ...data,
+          current_step: step,
+          progress_percentage: step === 2 ? analysisProgress : undefined,
+        });
+
+        setProgressMessage(message);
+        console.log("[DeepWikiSidebar] 进度消息:", message);
+      } else if (data.status === "pending") {
+        setProgressMessage("任务等待中...");
+      } else if (data.status === "completed") {
+        console.log("[DeepWikiSidebar] 任务已完成");
+      } else if (data.status === "failed") {
+        setProgressMessage("分析任务失败, 请检查后台日志");
       }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        console.warn('[DeepWikiSidebar] 请求超时');
-      } else {
-        console.error("[DeepWikiSidebar] 检查任务状态失败:", err);
-      }
+    } catch (err) {
+      console.error("[DeepWikiSidebar] 检查任务状态失败:", err);
     }
   };
 
@@ -279,6 +263,28 @@ export function Sidebar({
       setMarkdownSections([]);
     }
   }, [taskId]);
+
+  // 获取未读消息数量
+  useEffect(() => {
+    const fetchUnreadCount = async () => {
+      if (currentRepository?.claude_session_id) {
+        try {
+          const count = await chatApi.getUnreadCount(currentRepository.claude_session_id);
+          setUnreadCount(count);
+        } catch (error) {
+          console.error('Failed to fetch unread count:', error);
+        }
+      }
+    };
+
+    // 立即获取一次
+    fetchUnreadCount();
+
+    // 每30秒轮询一次
+    const interval = setInterval(fetchUnreadCount, 30000);
+
+    return () => clearInterval(interval);
+  }, [currentRepository?.claude_session_id]);
 
   // 切换展开状态
   const toggleExpanded = (sectionId: string) => {
@@ -432,19 +438,29 @@ export function Sidebar({
               )}
             </div>
           </div>
-          <Button
-            variant="outline"
-            className="w-full justify-start px-3 py-2 h-auto text-blue-600 border-blue-200 hover:bg-blue-50"
-            onClick={() => {
-              const chatUrl = currentRepository?.claude_session_id
-                ? `/chat/${currentRepository.claude_session_id}`
-                : '/chat';
-              navigate(chatUrl);
-            }}
-          >
-            <MessageCircle className="h-4 w-4 mr-2" />
-            <span className="text-sm">前往 AI 助手</span>
-          </Button>
+          <div className="relative">
+            <Button
+              variant="outline"
+              className="w-full justify-start px-3 py-2 h-auto text-blue-600 border-blue-200 hover:bg-blue-50"
+              onClick={() => {
+                const chatUrl = currentRepository?.claude_session_id
+                  ? `/chat/${currentRepository.claude_session_id}`
+                  : '/chat';
+                navigate(chatUrl);
+              }}
+            >
+              <MessageCircle className="h-4 w-4 mr-2" />
+              <span className="text-sm">前往 AI 助手</span>
+            </Button>
+            {/* 未读消息红点 */}
+            {unreadCount > 0 && (
+              <div className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 rounded-full flex items-center justify-center border-2 border-background">
+                <span className="text-[10px] font-bold text-white px-1">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

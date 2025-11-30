@@ -208,6 +208,7 @@ class AnalysisTask(Base):
     code_lines = Column(Integer, default=0, comment="代码行数")
     module_count = Column(Integer, default=0, comment="模块数量")
     status = Column(String(32), default="pending", index=True, comment="任务状态: pending/running/completed/failed")
+    current_file = Column(String(1024), comment="当前正在处理的文件路径")
     start_time = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="开始时间")
     end_time = Column(DateTime, comment="结束时间")
     task_index = Column(String(255), index=True, comment="任务索引")
@@ -228,6 +229,7 @@ class AnalysisTask(Base):
             "code_lines": self.code_lines,
             "module_count": self.module_count,
             "status": self.status,
+            "current_file": self.current_file,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "task_index": self.task_index,

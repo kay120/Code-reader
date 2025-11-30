@@ -38,7 +38,7 @@ export default function ProjectCard({ repository, onDelete }: ProjectCardProps) 
         setIsDeleting(true);
         try {
             const response = await fetch(
-                `http://localhost:8000/api/repository/repositories/${repository.id}`,
+                `http://localhost:8000/api/repository/repositories/${repository.id}?soft_delete=false`,
                 {
                     method: "DELETE",
                 }
@@ -117,6 +117,8 @@ export default function ProjectCard({ repository, onDelete }: ProjectCardProps) 
             // 根据文件进度和task_index判断当前步骤和整体进度
             const successfulFiles = latestTask.successful_files || 0;
             const totalFiles = latestTask.total_files || 0;
+            const analysisSuccess = latestTask.analysis_success_files || 0;
+            const analysisTotal = latestTask.analysis_total_files || 0;
 
             let currentStep = 0;
             let stepProgress = 0;
@@ -125,23 +127,30 @@ export default function ProjectCard({ repository, onDelete }: ProjectCardProps) 
 
             if (successfulFiles === totalFiles && totalFiles > 0) {
                 // 文件扫描完成
-                if (latestTask.task_index) {
-                    currentStep = 2; // 有索引说明知识库已创建,在分析数据模型
-                    stepProgress = 50; // 步骤2,假设50%进度
+                if (analysisTotal > 0) {
+                    // 正在分析数据模型
+                    currentStep = 2;
+                    const analysisProgress = analysisTotal > 0 ? (analysisSuccess / analysisTotal) * 100 : 0;
+                    stepProgress = 25 + Math.round(analysisProgress * 0.5); // 步骤2占50%
                     statusText = "分析数据模型";
-                    detailText = "步骤 2/4"; // 不显示文件数,显示步骤
+                    detailText = `${analysisSuccess}/${analysisTotal}`;
+                } else if (latestTask.task_index) {
+                    currentStep = 1; // 知识库已创建
+                    stepProgress = 25;
+                    statusText = "创建知识库";
+                    detailText = "步骤 1/4";
                 } else {
                     currentStep = 1; // 正在创建知识库
-                    stepProgress = 25; // 步骤1,25%进度
+                    stepProgress = 25;
                     statusText = "创建知识库";
-                    detailText = "步骤 1/4"; // 不显示文件数,显示步骤
+                    detailText = "步骤 1/4";
                 }
             } else if (successfulFiles > 0) {
                 // 正在扫描文件
                 currentStep = 0;
                 stepProgress = Math.round((successfulFiles / totalFiles) * 25); // 步骤0占25%
                 statusText = "扫描文件中";
-                detailText = `${successfulFiles}/${totalFiles}`; // 显示文件数
+                detailText = `${successfulFiles}/${totalFiles}`;
             }
 
             return (

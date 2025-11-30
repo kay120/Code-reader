@@ -19,5 +19,6 @@ if __name__ == "__main__":
         host=settings.APP_HOST,
         port=settings.APP_PORT,
         reload=False,  # 暂时禁用 reload 以避免问题
-        log_level="info"
+        log_level="info",
+        workers=12,  # 使用12个worker进程,进一步降低请求阻塞概率
     )

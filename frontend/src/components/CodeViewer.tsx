@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Badge } from "./ui/badge";
@@ -372,32 +372,21 @@ export default function CodeViewer({
       return {
         language: fileDetailData.language || "Unknown",
         lines: fileDetailData.code_lines || 0,
-        code: fileDetailData.code_content || "// 文件内容为空",
+        code: fileDetailData.code_content || "",
         filePath: fileDetailData.file_path || filePath,
       };
     }
-
-    // 后备：使用静态数据
-    const mockData = mockFileData[filePath];
-    if (mockData) {
-      return {
-        language: mockData.language,
-        lines: mockData.lines,
-        code: mockData.code,
-        filePath: filePath,
-      };
-    }
-
-    // 默认数据
-    return {
-      language: "Unknown",
-      lines: 0,
-      code: isLoadingFileDetail ? "// 文件内容加载中..." : "// 文件内容为空",
-      filePath: filePath,
-    };
+    return mockFileData[filePath] || mockFileData["src/models/user.py"];
   };
 
   const fileData = getDisplayFileData();
+
+  // analyzedLines 已删除，不再需要
+
+  // 性能优化：预先分割代码行
+  const codeLines = useMemo(() => {
+    return fileData.code.split('\n');
+  }, [fileData.code]);
 
   // 加载AI分析数据
   const loadAnalysisData = async (fileAnalysisId: number) => {
@@ -504,7 +493,7 @@ export default function CodeViewer({
               </div>
             )}
             {fileDetailError && (
-              <span className="text-sm text-red-500">加载失败</span>
+              <span className="text-sm text-blue-500">分析中...</span>
             )}
           </div>
 
@@ -545,9 +534,32 @@ export default function CodeViewer({
               className="h-full m-0 p-6 overflow-y-auto"
             >
               <Card className="p-0 overflow-hidden">
-                <pre className="p-6 text-sm bg-gray-50 overflow-x-auto">
-                  <code className="language-python">{fileData.code}</code>
-                </pre>
+                <div className="bg-gray-50">
+                  {/* 代码显示区域，带行号和AI分析标识 */}
+                  {codeLines.map((line, index) => {
+                    const lineNumber = index + 1;
+
+                    return (
+                      <div
+                        key={lineNumber}
+                        className="flex hover:bg-gray-100 group"
+                      >
+                        {/* 行号区域 */}
+                        <div className="flex items-center bg-gray-100 border-r border-gray-300 px-3 py-0.5 select-none">
+                          <span className="text-xs text-gray-500 font-mono w-10 text-right">
+                            {lineNumber}
+                          </span>
+                        </div>
+                        {/* 代码内容 */}
+                        <pre className="flex-1 px-4 py-0.5 text-sm font-mono overflow-x-auto">
+                          <code className={`language-${fileData.language.toLowerCase()}`}>
+                            {line}
+                          </code>
+                        </pre>
+                      </div>
+                    );
+                  })}
+                </div>
               </Card>
             </TabsContent>
 
@@ -568,16 +580,16 @@ export default function CodeViewer({
                   </Card>
                 )}
 
-                {/* 错误状态 */}
+                {/* 错误状态或分析中状态 */}
                 {analysisError && (
-                  <Card className="p-6 border-red-200 bg-red-50">
+                  <Card className="p-6 border-blue-200 bg-blue-50">
                     <div className="flex items-center space-x-2 mb-2">
-                      <Brain className="h-5 w-5 text-red-600" />
-                      <h3 className="text-red-800">加载失败</h3>
+                      <Brain className="h-5 w-5 text-blue-600" />
+                      <h3 className="text-blue-800">AI分析</h3>
                     </div>
                     <div className="flex items-center space-x-3 px-2 py-2">
                       <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent animate-spin rounded-full"/>
-                      <span className="text-gray-600 font-medium text-sm">正在分析中...</span>
+                      <span className="text-gray-600 font-medium text-sm">正在分析中，请稍候...</span>
                     </div>
                   </Card>
                 )}

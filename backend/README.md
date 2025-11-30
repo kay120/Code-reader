@@ -33,9 +33,60 @@ DB_PORT=3306
 DB_NAME=code_analysis
 DB_USER=root
 DB_PASSWORD=123456
+
+# Celery 配置 (用于后台异步任务)
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
 ```
 
-### 3. 启动服务
+### 3. 启动 Redis (必需)
+
+后台任务队列需要 Redis 支持。使用 Docker 启动 Redis:
+
+```bash
+# 启动 Redis 容器
+docker run -d \
+  --name code-reader-redis \
+  -p 6379:6379 \
+  --health-cmd "redis-cli ping" \
+  --health-interval 5s \
+  redis:7-alpine
+
+# 验证 Redis 是否运行
+docker exec code-reader-redis redis-cli ping
+# 应该返回: PONG
+```
+
+如果已有 Redis 容器运行在 6379 端口,可以跳过此步骤。
+
+### 4. 启动 Celery Worker (必需)
+
+Celery worker 负责处理后台分析任务,避免阻塞 API 请求:
+
+```bash
+# 在 backend 目录下启动 Celery worker
+cd backend
+source .venv/bin/activate  # 如果使用虚拟环境
+
+# 启动 worker (推荐在后台运行)
+celery -A celery_app worker \
+  --loglevel=info \
+  --concurrency=4 \
+  --queues=analysis
+
+# 或者使用 nohup 在后台运行
+nohup celery -A celery_app worker \
+  --loglevel=info \
+  --concurrency=4 \
+  --queues=analysis > celery_worker.log 2>&1 &
+```
+
+**参数说明:**
+- `--concurrency=4`: 使用 4 个并发 worker 进程
+- `--queues=analysis`: 监听 analysis 队列
+- `--loglevel=info`: 日志级别
+
+### 5. 启动 API 服务
 
 ```bash
 # 方式1: 直接运行主文件

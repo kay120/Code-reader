@@ -21,7 +21,7 @@ engine = create_engine(
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_pre_ping=True,  # 连接池预检查
-    pool_recycle=3600,  # 连接回收时间（秒）
+    pool_recycle=settings.DB_POOL_RECYCLE,  # 连接回收时间（秒）
 )
 
 # 创建会话工厂

@@ -640,7 +640,7 @@ async def execute_step_2_analyze_data_model(task_id: int, vectorstore_index: str
         return {"success": False, "message": f"步骤2执行失败: {str(e)}"}
 
 
-async def execute_step_3_generate_document_structure(task_id: int, external_file_path: str) -> Dict:
+async def execute_step_3_generate_document_structure(task_id: int, external_file_path: str, repo_info: Dict = None) -> Dict:
     """步骤3: 生成文档结构"""
     # 延迟导入避免循环依赖
     from services import TaskReadmeService
@@ -735,17 +735,27 @@ async def execute_step_3_generate_document_structure(task_id: int, external_file
 
         logger.info(f"传递给README API的路径: {deepwiki_path}")
 
-        # 从环境变量或配置中获取README API基础URL
+        # 从环境变量或配置中获取README API基础URL和模型配置
         readme_api_base_url = os.getenv("README_API_BASE_URL", "http://localhost:80111")
+        openai_model = os.getenv("OPENAI_MODEL", "kimi-k2-0905-preview")
+
+        # 提取项目名称
+        project_name = None
+        if repo_info:
+            project_name = repo_info.get("name") or repo_info.get("full_name")
+            if project_name and "/" in project_name:
+                # 从 "owner/repo" 中提取 "repo"
+                project_name = project_name.split("/")[-1]
 
         request_data = {
             "local_path": deepwiki_path,  # 使用转换后的deepwiki路径
+            "project_name": project_name,  # 传递真实项目名称
             "generate_readme": True,
             "analyze_dependencies": True,
             "generate_architecture_diagram": True,
             "language": "zh",
             "provider": "openai",
-            "model": "kimi-k2",
+            "model": openai_model,  # 从环境变量读取
             "export_format": "markdown",
             "analysis_depth": "detailed",
             "include_code_examples": True,
@@ -1024,7 +1034,7 @@ async def run_task(task_id: int, external_file_path: str):
             # 步骤3: 生成文档结构
             logger.info("=== 开始执行步骤3: 生成文档结构 ===")
 
-            step3_result = await execute_step_3_generate_document_structure(task_id, external_file_path)
+            step3_result = await execute_step_3_generate_document_structure(task_id, external_file_path, repo_info)
 
             if not step3_result["success"]:
                 logger.warning(f"步骤3失败(不影响整体任务): {step3_result['message']}")
@@ -1042,6 +1052,7 @@ async def run_task(task_id: int, external_file_path: str):
                 task_obj.status = "completed"
                 task_obj.end_time = datetime.now()
                 task_obj.progress_percentage = 100
+                task_obj.current_file = None  # 清空当前处理文件
                 db.commit()
 
             logger.info(f"任务 {task_id} 所有步骤执行完成")
@@ -1065,6 +1076,7 @@ async def run_task(task_id: int, external_file_path: str):
                 if task_obj:
                     task_obj.status = "failed"
                     task_obj.end_time = datetime.now()
+                    task_obj.current_file = None  # 清空当前处理文件
                     db.commit()
             except Exception as update_error:
                 logger.error(f"更新任务状态失败: {str(update_error)}")

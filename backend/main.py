@@ -19,9 +19,18 @@ from config import settings
 from pathlib import Path
 from models import TaskReadme
 from utils.makdown_utils.mermaid_to_svg import MermaidToSvgConverter
+import os
 
-# 加载环境变量
-load_dotenv()
+# 先清除可能存在的系统环境变量，确保只使用 .env 文件中的配置
+env_keys_to_clear = [
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_API_BASE',
+    'LLM_MAX_CONCURRENT', 'LLM_BATCH_SIZE', 'LLM_REQUEST_TIMEOUT', 'LLM_RETRY_DELAY'
+]
+for key in env_keys_to_clear:
+    os.environ.pop(key, None)
+
+# 加载环境变量 - override=True 确保 .env 文件中的值优先于系统环境变量
+load_dotenv(override=True)
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -54,28 +63,28 @@ async def process_empty_rendered_content():
                 ).all()
                 
                 if empty_readmes:
-                    logger.info(f"发现 {len(empty_readmes)} 条需要处理的README记录")
-                    
+                    logger.debug(f"发现 {len(empty_readmes)} 条需要处理的README记录")
+
                     # 初始化转换器
                     converter = MermaidToSvgConverter(use_cli=True)
-                    
+
                     for readme in empty_readmes:
                         try:
-                            logger.info(f"处理README ID: {readme.id}, Task ID: {readme.task_id}")
-                            
+                            logger.debug(f"处理README ID: {readme.id}, Task ID: {readme.task_id}")
+
                             # 转换markdown内容
                             if readme.content:
                                 # 使用 asyncio.to_thread 将阻塞操作移到线程池中执行
                                 rendered_content = await asyncio.to_thread(
-                                    converter.convert_markdown, 
+                                    converter.convert_markdown,
                                     readme.content
                                 )
-                                
+
                                 # 更新rendered_content
                                 readme.rendered_content = rendered_content
                                 db.commit()
-                                
-                                logger.info(f"成功生成README ID {readme.id} 的rendered_content")
+
+                                logger.debug(f"成功生成README ID {readme.id} 的rendered_content")
                             else:
                                 logger.warning(f"README ID {readme.id} 的content字段为空，跳过处理")
                                 
@@ -130,10 +139,7 @@ async def lifespan(app: FastAPI):
             if unfinished_tasks:
                 logger.info(f"发现 {len(unfinished_tasks)} 个未完成的任务,正在恢复...")
 
-                # 导入 run_task 函数
-                from service.task_service import run_task
-
-                # 为每个未完成的任务重新启动后台线程
+                # 为每个未完成的任务重新启动
                 for task_obj in unfinished_tasks:
                     logger.info(f"恢复任务 ID: {task_obj.id}, 状态: {task_obj.status}")
 
@@ -142,19 +148,34 @@ async def lifespan(app: FastAPI):
                     if repo:
                         external_file_path = repo.local_path
 
-                        # 创建同步包装函数
-                        def run_task_sync(task_id, external_file_path):
-                            import asyncio
-                            asyncio.run(run_task(task_id, external_file_path))
+                        # 使用Celery异步任务处理分析
+                        try:
+                            from tasks import run_analysis_task
 
-                        # 启动后台线程
-                        threading.Thread(
-                            target=run_task_sync,
-                            args=(task_obj.id, external_file_path),
-                            daemon=True
-                        ).start()
+                            celery_task = run_analysis_task.delay(
+                                task_id=task_obj.id,
+                                external_file_path=external_file_path
+                            )
 
-                        logger.info(f"任务 {task_obj.id} 已重新启动")
+                            logger.info(f"✅ 任务 {task_obj.id} 已提交到Celery队列 (Celery任务ID: {celery_task.id})")
+                        except Exception as celery_error:
+                            logger.error(f"⚠️ 提交Celery任务失败,回退到线程模式: {str(celery_error)}")
+
+                            # 如果Celery不可用,回退到线程模式
+                            from service.task_service import run_task
+
+                            def run_task_sync(task_id, external_file_path):
+                                import asyncio
+                                asyncio.run(run_task(task_id, external_file_path))
+
+                            # 启动后台线程
+                            threading.Thread(
+                                target=run_task_sync,
+                                args=(task_obj.id, external_file_path),
+                                daemon=True
+                            ).start()
+
+                            logger.info(f"⚠️ 任务 {task_obj.id} 使用线程模式重新启动")
                     else:
                         logger.warning(f"任务 {task_obj.id} 找不到对应的仓库,跳过恢复")
             else:
@@ -248,6 +269,92 @@ async def health_check():
             "service": "AI Codebase Navigator API",
         },
     )
+
+
+@app.get("/celery/health", tags=["系统监控"])
+async def celery_health_check():
+    """
+    Celery Worker健康检查接口
+
+    返回Celery worker的运行状态和统计信息
+    """
+    try:
+        from celery_app import celery_app
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        # 使用 ping 快速检查 worker 是否在线（更快的方法）
+        inspect = celery_app.control.inspect(timeout=1.0)  # 设置1秒超时，避免worker繁忙时误报
+
+        # 使用线程池异步执行，避免阻塞
+        def ping_workers():
+            try:
+                # ping 比 active() 和 stats() 快得多
+                pong = inspect.ping()
+                return pong
+            except Exception as e:
+                logger.warning(f"Ping Celery workers失败: {str(e)}")
+                return None
+
+        # 在线程池中执行，最多等待1.5秒
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            try:
+                pong = await asyncio.wait_for(
+                    loop.run_in_executor(executor, ping_workers),
+                    timeout=1.5
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Celery健康检查超时")
+                pong = None
+
+        # 如果 ping 失败，返回不健康状态
+        if not pong:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "message": "没有可用的Celery worker",
+                    "timestamp": datetime.now().isoformat(),
+                    "workers": [],
+                    "total_workers": 0,
+                },
+            )
+
+        # 统计worker信息（简化版，只返回在线的worker数量）
+        worker_list = []
+        total_workers = len(pong)
+
+        for worker_name in pong.keys():
+            worker_list.append({
+                "name": worker_name,
+                "status": "online",
+            })
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "healthy",
+                "message": f"{total_workers} 个Celery worker运行正常",
+                "timestamp": datetime.now().isoformat(),
+                "workers": worker_list,
+                "total_workers": total_workers,
+                "total_active_tasks": 0,  # ping 不返回活跃任务数，设为0
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"Celery健康检查失败: {str(e)}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "message": f"Celery健康检查失败: {str(e)}",
+                "timestamp": datetime.now().isoformat(),
+                "workers": [],
+                "total_workers": 0,
+            },
+        )
 
 
 @app.get("/", tags=["根路径"])

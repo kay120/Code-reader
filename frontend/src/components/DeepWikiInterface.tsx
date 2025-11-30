@@ -64,6 +64,8 @@ export default function DeepWikiInterface({
         module_count: number;
     } | null>(null);
     const [currentTaskId, setCurrentTaskId] = useState<number | null>(null);
+    const [completedFiles, setCompletedFiles] = useState<Set<string>>(new Set());
+    const [pendingFiles, setPendingFiles] = useState<Set<string>>(new Set());
 
     // 使用 useCallback 优化，避免每次渲染都创建新函数
     const handleFileSelect = useCallback((filePath: string) => {
@@ -162,7 +164,7 @@ export default function DeepWikiInterface({
         setSelectedFile(null);
     };
 
-    // 数据加载函数 - 新的流程：通过full_name获取仓库信息
+    // 数据加载函数 - 优化版：并行加载 + 懒加载
     const loadProjectData = async (fullNameHash: string) => {
         if (!fullNameHash) return;
 
@@ -209,21 +211,20 @@ export default function DeepWikiInterface({
                 return;
             }
 
-            // 3. 找到最新的任务（按start_time排序，取最前面的）
+            // 3. 找到最新的任务（按start_time降序排序，取第一个）
             const sortedTasks = tasksResponse.tasks.sort(
                 (a, b) =>
-                    new Date(a.start_time).getTime() -
-                    new Date(b.start_time).getTime()
+                    new Date(b.start_time).getTime() -
+                    new Date(a.start_time).getTime()
             );
-            const latestTask = sortedTasks[0]; // 取排序最前面的任务
+            const latestTask = sortedTasks[0]; // 取最新的任务
 
             console.log("Latest task found:", latestTask);
-            console.log("Loading files for task ID:", latestTask.id);
 
-            // 4. 设置当前任务ID
+            // 4. 设置当前任务ID（立即设置，让 README 可以开始加载）
             setCurrentTaskId(latestTask.id);
 
-            // 5. 提取任务统计信息
+            // 5. 提取任务统计信息（立即显示）
             const statistics = {
                 code_lines: (latestTask as any).code_lines || 0,
                 total_files: latestTask.total_files || 0,
@@ -232,49 +233,94 @@ export default function DeepWikiInterface({
             setTaskStatistics(statistics);
             console.log("Task statistics:", statistics);
 
-            // 4. 获取该任务的文件列表
-            const filesResponse = await api.getFilesByTaskId(latestTask.id);
-            console.log("Files API response:", filesResponse);
+            // 6. 立即结束 loading 状态，让页面可以显示
+            setIsLoading(false);
 
-            if (filesResponse.status === "success") {
-                if (
-                    filesResponse.files &&
-                    Array.isArray(filesResponse.files) &&
-                    filesResponse.files.length > 0
-                ) {
-                    // 5. 构建文件数据映射
-                    const dataMap = new Map();
-                    filesResponse.files.forEach((file: any) => {
-                        // 统一路径格式：将反斜杠转换为正斜杠，与文件树保持一致
-                        const normalizedPath = file.file_path.replace(
-                            /\\/g,
-                            "/"
+            // 7. 异步加载文件列表（不阻塞页面显示）
+            console.log("Loading files for task ID:", latestTask.id);
+            api.getFilesByTaskId(latestTask.id).then((filesResponse) => {
+                console.log("Files API response:", filesResponse);
+
+                if (filesResponse.status === "success") {
+                    if (
+                        filesResponse.files &&
+                        Array.isArray(filesResponse.files) &&
+                        filesResponse.files.length > 0
+                    ) {
+                        // 构建文件数据映射 + 收集已分析和未分析的文件
+                        const dataMap = new Map();
+                        const completedSet = new Set<string>();
+                        const pendingSet = new Set<string>();
+
+                        console.log("🔍 开始处理文件列表，总数:", filesResponse.files.length);
+                        console.log("🔍 前3个文件的原始数据:", filesResponse.files.slice(0, 3));
+
+                        filesResponse.files.forEach((file: any, index: number) => {
+                            // 统一路径格式：将反斜杠转换为正斜杠，与文件树保持一致
+                            const normalizedPath = file.file_path.replace(
+                                /\\/g,
+                                "/"
+                            );
+
+                            // 优先保留 status = "success" 的记录
+                            // 如果已有记录且是 success，则不覆盖
+                            // 如果新记录是 success，则覆盖旧记录
+                            const existingFile = dataMap.get(normalizedPath);
+                            if (!existingFile ||
+                                (file.status === "success" && existingFile.status !== "success")) {
+                                dataMap.set(normalizedPath, file);
+                            }
+
+                            // 打印前3个文件的 status 字段
+                            if (index < 3) {
+                                console.log(`  文件 ${index}: ${normalizedPath}`);
+                                console.log(`    file.status = "${file.status}"`);
+                                console.log(`    file.analysis_status = "${file.analysis_status}"`);
+                                console.log(`    所有字段:`, Object.keys(file));
+                            }
+                        });
+
+                        // 根据最终保存到 dataMap 的记录来分类文件状态
+                        dataMap.forEach((file, normalizedPath) => {
+                            // success 或 completed 都表示已完成
+                            if (file.status === "success" || file.status === "completed") {
+                                completedSet.add(normalizedPath);
+                            } else {
+                                // pending, failed, 或其他状态都显示红点
+                                pendingSet.add(normalizedPath);
+                            }
+                        });
+
+                        setFileDataMap(dataMap);
+                        setCompletedFiles(completedSet);
+                        setPendingFiles(pendingSet);
+                        console.log("File data map built:", dataMap);
+                        console.log("Completed files:", completedSet.size, "files");
+                        console.log("Pending files:", pendingSet.size, "files");
+
+                        // 构建文件树
+                        console.log(
+                            "Building file tree from files:",
+                            filesResponse.files
                         );
-                        dataMap.set(normalizedPath, file);
-                    });
-                    setFileDataMap(dataMap);
-                    console.log("File data map built:", dataMap);
-
-                    // 6. 构建文件树
-                    console.log(
-                        "Building file tree from files:",
-                        filesResponse.files
-                    );
-                    const tree = buildFileTree(filesResponse.files);
-                    sortFileTree(tree);
-                    setFileTree(tree);
-                    console.log("File tree built:", tree);
+                        const tree = buildFileTree(filesResponse.files);
+                        sortFileTree(tree);
+                        setFileTree(tree);
+                        console.log("File tree built:", tree);
+                    } else {
+                        console.warn("No files found for task:", latestTask.id);
+                        setFileTree(null);
+                        setFileDataMap(new Map());
+                    }
                 } else {
-                    console.warn("No files found for task:", latestTask.id);
-                    setFileTree(null);
-                    setFileDataMap(new Map());
+                    console.error("Files API returned error:", filesResponse);
                 }
-            } else {
-                console.error("Files API returned error:", filesResponse);
-                throw new Error(
-                    filesResponse.message || "Failed to fetch files"
-                );
-            }
+            }).catch((err) => {
+                console.error("Error loading files:", err);
+                setFileTree(null);
+                setFileDataMap(new Map());
+            });
+
         } catch (err) {
             console.error("Error loading project data:", err);
             setError(
@@ -282,7 +328,6 @@ export default function DeepWikiInterface({
                     ? err.message
                     : "Failed to load project data"
             );
-        } finally {
             setIsLoading(false);
         }
     };
@@ -332,6 +377,7 @@ export default function DeepWikiInterface({
                             projectName={repositoryInfo?.name || fullNameHash}
                             taskStatistics={taskStatistics}
                             taskId={currentTaskId}
+                            repositoryInfo={repositoryInfo}
                         />
                     ) : (
                         selectedFile && (
@@ -392,6 +438,8 @@ export default function DeepWikiInterface({
                             highlightedFile={highlightedFile}
                             expandedPaths={expandedPaths}
                             taskId={currentTaskId}
+                            completedFiles={completedFiles}
+                            pendingFiles={pendingFiles}
                         />
                     </div>
                 </aside>

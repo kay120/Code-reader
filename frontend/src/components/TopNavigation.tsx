@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "./ui/avatar";
-import { useAuth } from "../contexts/ProjectContext";
+import { useAuth, useProject } from "../contexts/ProjectContext";
 import ServiceHealthMonitor from "./ServiceHealthMonitor";
 import {
   Brain,
@@ -34,6 +34,9 @@ import {
   GitBranch,
   MessageCircle,
 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { chatApi } from "../services/chat-api";
+import api from "../services/api";
 
 interface ProjectVersion {
   id: string;
@@ -79,11 +82,68 @@ export default function TopNavigation({
   onVersionChange,
 }: TopNavigationProps) {
   const { logout } = useAuth();
+  const { currentRepository } = useProject();
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
+
+  // 获取未读消息数量
+  useEffect(() => {
+    const fetchUnreadCount = async () => {
+      if (currentRepository?.claude_session_id) {
+        try {
+          const count = await chatApi.getUnreadCount(currentRepository.claude_session_id);
+          setUnreadCount(count);
+        } catch (error) {
+          console.error('Failed to fetch unread count:', error);
+        }
+      }
+    };
+
+    // 立即获取一次
+    fetchUnreadCount();
+
+    // 每30秒轮询一次
+    const interval = setInterval(fetchUnreadCount, 30000);
+
+    return () => clearInterval(interval);
+  }, [currentRepository?.claude_session_id]);
 
   const handleLogout = () => {
     logout();
     // 登出后重新加载页面，这样会触发认证检查
     window.location.reload();
+  };
+
+  const handleReanalyze = async () => {
+    if (!currentRepository?.id) {
+      alert("错误：未找到当前仓库信息");
+      return;
+    }
+
+    if (!confirm("确定要重新分析当前项目吗？这将创建一个新的分析任务。")) {
+      return;
+    }
+
+    setIsReanalyzing(true);
+    try {
+      const result = await api.reanalyzeRepository(currentRepository.id);
+
+      if (result.status === "success") {
+        alert(`重新分析已启动！\n任务ID: ${result.task_id}\n正在重新分析项目...`);
+
+        // 3秒后刷新页面以显示新任务
+        setTimeout(() => {
+          window.location.reload();
+        }, 1000);
+      } else {
+        alert(`重新分析失败：${result.message || "未知错误"}`);
+      }
+    } catch (error) {
+      console.error("重新分析失败:", error);
+      alert(`重新分析失败：${error}`);
+    } finally {
+      setIsReanalyzing(false);
+    }
   };
   const getPageTitle = () => {
     switch (currentPage) {
@@ -243,18 +303,33 @@ export default function TopNavigation({
             {currentPage === "deepwiki" && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onNavigate("chat")}
-                    className="flex items-center space-x-2"
-                  >
-                    <MessageCircle className="h-4 w-4" />
-                    <span className="hidden md:inline">AI 助手</span>
-                  </Button>
+                  <div className="relative">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onNavigate("chat")}
+                      className="flex items-center space-x-2"
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                      <span className="hidden md:inline">AI 助手</span>
+                    </Button>
+                    {/* 未读消息红点 */}
+                    {unreadCount > 0 && (
+                      <div className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 rounded-full flex items-center justify-center border-2 border-background">
+                        <span className="text-[10px] font-bold text-white px-1">
+                          {unreadCount > 99 ? '99+' : unreadCount}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </TooltipTrigger>
                 <TooltipContent>
                   <p>与AI助手对话，深入了解代码库</p>
+                  {unreadCount > 0 && (
+                    <p className="text-xs text-red-400 mt-1">
+                      {unreadCount} 条未读消息
+                    </p>
+                  )}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -363,10 +438,11 @@ export default function TopNavigation({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => onNavigate("upload")}
+                      onClick={handleReanalyze}
+                      disabled={isReanalyzing}
                     >
-                      <RotateCcw className="h-4 w-4 mr-2" />
-                      重新分析
+                      <RotateCcw className={`h-4 w-4 mr-2 ${isReanalyzing ? 'animate-spin' : ''}`} />
+                      {isReanalyzing ? "重新分析中..." : "重新分析"}
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>

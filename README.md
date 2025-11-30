@@ -23,7 +23,32 @@
 
 ## ⚡ 快速开始
 
-### Docker 部署（推荐）
+### 一键启动（推荐）
+
+使用一键启动脚本可以快速启动所有服务：
+
+```bash
+# 1. 进入工作目录
+cd /path/to/codereader_workspace
+
+# 2. 启动所有服务
+./start-all-services.sh
+
+# 3. 查看日志
+./view-all-logs.sh           # 查看所有服务最近20行日志
+./view-all-logs.sh -f        # 实时跟踪所有服务日志
+./view-all-logs.sh -e        # 只显示错误日志
+./view-all-logs.sh -n 50     # 查看最近50行日志
+
+# 4. 停止所有服务
+./stop-all-services.sh
+
+# 5. 访问服务
+# 前端: http://localhost:3000
+# 后端API: http://localhost:8000/docs
+```
+
+### Docker 部署
 
 使用 Docker 可以一键部署前后端服务，无需配置复杂的环境：
 

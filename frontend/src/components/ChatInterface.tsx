@@ -22,6 +22,8 @@ import {
   Check,
   ArrowUp,
   Wrench,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { chatApi } from "../services/chat-api";
 import ReactMarkdown from "react-markdown";
@@ -332,6 +334,8 @@ export default function ChatInterface({
   const [conversationId, setConversationId] = useState<string>(
     () => crypto.randomUUID()
   );
+  // 工具调用折叠状态：key 是消息组的第一个消息ID，value 是是否展开
+  const [toolCallsExpanded, setToolCallsExpanded] = useState<Record<string, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -342,6 +346,54 @@ export default function ChatInterface({
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // 将连续的工具调用消息分组
+  const groupMessages = (messages: ChatMessage[]) => {
+    const groups: Array<{ type: 'single' | 'toolGroup', messages: ChatMessage[], id: string }> = [];
+    let currentToolGroup: ChatMessage[] = [];
+
+    messages.forEach((msg, index) => {
+      if (msg.toolUse) {
+        // 如果是工具调用消息，添加到当前组
+        currentToolGroup.push(msg);
+      } else {
+        // 如果不是工具调用消息
+        if (currentToolGroup.length > 0) {
+          // 先保存之前的工具调用组
+          groups.push({
+            type: 'toolGroup',
+            messages: currentToolGroup,
+            id: currentToolGroup[0].id
+          });
+          currentToolGroup = [];
+        }
+        // 添加当前消息
+        groups.push({
+          type: 'single',
+          messages: [msg],
+          id: msg.id
+        });
+      }
+    });
+
+    // 处理最后一组工具调用
+    if (currentToolGroup.length > 0) {
+      groups.push({
+        type: 'toolGroup',
+        messages: currentToolGroup,
+        id: currentToolGroup[0].id
+      });
+    }
+
+    return groups;
+  };
+
+  const toggleToolGroup = (groupId: string) => {
+    setToolCallsExpanded(prev => ({
+      ...prev,
+      [groupId]: !prev[groupId]
+    }));
+  };
 
   const handleSendMessage = async (content: string) => {
     if (!content.trim()) return;
@@ -559,7 +611,75 @@ export default function ChatInterface({
                 ) : (
                   /* Messages List */
                   <div className="p-8 space-y-8">
-                    {messages.map((message) => (
+                    {groupMessages(messages).map((group) => {
+                      // 如果是工具调用组
+                      if (group.type === 'toolGroup') {
+                        const isExpanded = toolCallsExpanded[group.id] || false;
+                        return (
+                          <div key={group.id} className="flex justify-start">
+                            <div className="flex items-start space-x-4 max-w-[90%]">
+                              {/* Avatar */}
+                              <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 shadow-md bg-gradient-to-r from-amber-500 to-orange-600">
+                                <Wrench className="h-5 w-5 text-white" />
+                              </div>
+
+                              {/* Tool Calls Group */}
+                              <div className="group flex-1 text-left">
+                                <div className="inline-block p-4 rounded-xl relative shadow-sm bg-amber-50 border border-amber-200 text-gray-900 rounded-bl-md">
+                                  {/* Header with collapse button */}
+                                  <div
+                                    className="flex items-center justify-between cursor-pointer hover:bg-amber-100 -m-4 p-4 rounded-t-xl transition-colors"
+                                    onClick={() => toggleToolGroup(group.id)}
+                                  >
+                                    <div className="flex items-center space-x-2 text-amber-700">
+                                      <Wrench className="h-4 w-4" />
+                                      <span className="font-semibold text-sm">
+                                        工具调用 ({group.messages.length})
+                                      </span>
+                                    </div>
+                                    {isExpanded ? (
+                                      <ChevronDown className="h-4 w-4 text-amber-700" />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4 text-amber-700" />
+                                    )}
+                                  </div>
+
+                                  {/* Tool calls list (collapsible) */}
+                                  {isExpanded && (
+                                    <div className="mt-4 space-y-3">
+                                      {group.messages.map((msg, idx) => (
+                                        <div key={msg.id} className="p-3 bg-white rounded-lg border border-amber-200">
+                                          <div className="text-sm font-medium text-amber-800 mb-2">
+                                            {idx + 1}. {msg.toolUse?.toolName}
+                                          </div>
+                                          {msg.toolUse?.toolInput && (
+                                            <div>
+                                              <div className="text-xs font-medium text-gray-600 mb-1">
+                                                参数:
+                                              </div>
+                                              <pre className="text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap">
+                                                {JSON.stringify(msg.toolUse.toolInput, null, 2)}
+                                              </pre>
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="text-xs text-gray-500 mt-2 text-left">
+                                  {formatTimestamp(group.messages[0].timestamp)}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      // 如果是单个消息
+                      const message = group.messages[0];
+                      return (
                       <div
                         key={message.id}
                         className={`flex ${
@@ -670,7 +790,8 @@ export default function ChatInterface({
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
 
                     {/* Loading indicator */}
                     {isLoading && (

@@ -76,12 +76,12 @@ class Config:
     @property
     def llm_max_concurrent(self) -> int:
         """LLM 最大并发请求数"""
-        return int(os.getenv("LLM_MAX_CONCURRENT", "5"))
+        return int(os.getenv("LLM_MAX_CONCURRENT", "1"))  # 进一步降低为1
 
     @property
     def llm_batch_size(self) -> int:
         """LLM 批处理大小"""
-        return int(os.getenv("LLM_BATCH_SIZE", "10"))
+        return int(os.getenv("LLM_BATCH_SIZE", "5"))  # 进一步降低为5
 
     @property
     def llm_request_timeout(self) -> int:
@@ -92,6 +92,17 @@ class Config:
     def llm_retry_delay(self) -> int:
         """LLM 重试延迟时间(秒)"""
         return int(os.getenv("LLM_RETRY_DELAY", "2"))
+
+    # 分析任务资源限制配置
+    @property
+    def analysis_max_concurrent_files(self) -> int:
+        """同时分析的文件数"""
+        return int(os.getenv("ANALYSIS_MAX_CONCURRENT_FILES", "1"))  # 降低为1
+
+    @property
+    def analysis_sleep_between_files(self) -> float:
+        """文件间延迟(秒)"""
+        return float(os.getenv("ANALYSIS_SLEEP_BETWEEN_FILES", "2.0"))  # 增加到2秒
 
     # RAG 服务配置
     @property

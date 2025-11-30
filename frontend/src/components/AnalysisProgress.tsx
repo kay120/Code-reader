@@ -110,6 +110,7 @@ export default function AnalysisProgress({
   const [dataModelAnalysisStatus, setDataModelAnalysisStatus] = useState({
     isAnalyzing: false,
     message: "",
+    currentFile: "",
   });
 
   // 模拟队列数据（保留作为备用）
@@ -809,15 +810,39 @@ log_file = "app.log"
 	            setDataModelAnalysisStatus({
 	              isAnalyzing: true,
 	              message: "正在分析代码结构和数据模型...",
+	              currentFile: "",
 	            });
 
+	            // 启动轮询来更新当前处理的文件
+	            const pollInterval = setInterval(async () => {
+	              try {
+	                const taskDetail = await api.getAnalysisTaskDetail(taskId);
+	                if (taskDetail.status === "success" && taskDetail.task) {
+	                  const currentFile = taskDetail.task.current_file;
+	                  if (currentFile) {
+	                    setDataModelAnalysisStatus(prev => ({
+	                      ...prev,
+	                      currentFile: currentFile,
+	                      message: `正在分析: ${currentFile}`,
+	                    }));
+	                  }
+	                }
+	              } catch (error) {
+	                console.warn("获取任务详情失败:", error);
+	              }
+	            }, 2000); // 每2秒轮询一次
+
 	            const dmResult = await api.analyzeDataModelFlow(taskId);
+
+	            // 停止轮询
+	            clearInterval(pollInterval);
 
 	            if (dmResult.status !== "success") {
 	              console.error("分析数据模型失败:", dmResult.message);
 	              setDataModelAnalysisStatus({
 	                isAnalyzing: false,
 	                message: "",
+	                currentFile: "",
 	              });
 	              return false;
 	            }
@@ -837,6 +862,7 @@ log_file = "app.log"
 	            setDataModelAnalysisStatus({
 	              isAnalyzing: false,
 	              message: "分析完成",
+	              currentFile: "",
 	            });
 	            return true;
 	          } catch (error) {
@@ -844,6 +870,7 @@ log_file = "app.log"
 	            setDataModelAnalysisStatus({
 	              isAnalyzing: false,
 	              message: "",
+	              currentFile: "",
 	            });
 	            return false;
 	          }
@@ -1649,9 +1676,16 @@ log_file = "app.log"
                             {index === 2 &&
                               isActive &&
                               dataModelAnalysisStatus.isAnalyzing && (
-                                <span className="block text-xs mt-1 opacity-75">
-                                  {dataModelAnalysisStatus.message}
-                                </span>
+                                <div className="block text-xs mt-1 space-y-1">
+                                  <span className="opacity-75">
+                                    {dataModelAnalysisStatus.message}
+                                  </span>
+                                  {dataModelAnalysisStatus.currentFile && (
+                                    <div className="text-blue-600 truncate max-w-md">
+                                      📄 {dataModelAnalysisStatus.currentFile}
+                                    </div>
+                                  )}
+                                </div>
                               )}
                             {/* 在文档生成步骤显示详细进度 */}
                             {index === 3 &&

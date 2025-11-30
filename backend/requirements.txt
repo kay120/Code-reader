@@ -15,3 +15,5 @@ requests>=2.32.5
 uvicorn[standard]>=0.35.0
 sqlalchemy>=2.0.23
 alembic>=1.13.1
+celery>=5.3.0
+redis>=5.0.0
