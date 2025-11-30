@@ -260,3 +260,10 @@ prepare-pr.sh
 update-deps.sh
 SCRIPTS_README.md
 WORKFLOW_QUICK_GUIDE.md
+
+# Test files and scripts
+backend/add_test_data.py
+backend/test_delete_repository.py
+
+# pip install logs
+backend/=*
