@@ -78,7 +78,7 @@ class WebVectorizeRepoNode(AsyncNode):
         logger.info(f"🚀 开始为仓库 {store_id} 创建向量知识库")
         await asyncio.sleep(2)  # 2秒延迟让用户看到创建过程
 
-        index_name = await self._create_vector_store(documents, store_id)
+        index_name = await self._create_vector_store(documents, store_id, task_id)
 
         if not index_name:
             logger.warning("⚠️ 向量知识库创建失败,使用本地索引")
@@ -167,7 +167,7 @@ class WebVectorizeRepoNode(AsyncNode):
             repo_name = full_name
         return repo_name
 
-    async def _create_vector_store(self, documents: list, store_id: str) -> str:
+    async def _create_vector_store(self, documents: list, store_id: str, task_id: int) -> str:
         """创建向量知识库"""
         try:
             # 检查RAG服务健康状态
@@ -198,7 +198,6 @@ class WebVectorizeRepoNode(AsyncNode):
                     logger.info(f"处理第 {batch_num}/{total_batches} 批文档 ({len(batch)} 个文档)")
 
                     # 更新任务进度到数据库
-                    task_id = prep_res[0]  # 从 prep_res 获取 task_id
                     progress_msg = f"向量化进度: {batch_num}/{total_batches} 批 ({batch_num*100//total_batches}%)"
                     await self._update_task_progress(task_id, progress_msg)
 
@@ -280,7 +279,7 @@ class WebVectorizeRepoNode(AsyncNode):
     async def _update_task_progress(self, task_id: int, message: str) -> None:
         """更新任务进度到数据库"""
         try:
-            api_url = f"{self.api_base_url}/api/analysis/tasks/{task_id}"
+            api_url = f"{self.api_base_url}/api/analysis-tasks/{task_id}"
             update_data = {"current_file": message}
 
             async with aiohttp.ClientSession() as session:
