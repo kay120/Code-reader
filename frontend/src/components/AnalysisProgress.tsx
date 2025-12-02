@@ -783,6 +783,24 @@ log_file = "app.log"
               indexName: "",
             });
 
+            // 启动轮询来更新向量化进度
+            const vectorizationPollInterval = setInterval(async () => {
+              try {
+                const taskDetail = await api.getAnalysisTaskDetail(taskId);
+                if (taskDetail.status === "success" && taskDetail.task) {
+                  const currentFile = taskDetail.task.current_file;
+                  if (currentFile) {
+                    setVectorizationProgress(prev => ({
+                      ...prev,
+                      currentFile: currentFile,
+                    }));
+                  }
+                }
+              } catch (error: any) {
+                console.warn("获取向量化进度失败:", error);
+              }
+            }, 2000); // 每2秒轮询一次
+
             // 调用后端知识库创建flow，等待完成
             console.log("触发知识库创建flow，等待完成...");
 
@@ -793,6 +811,9 @@ log_file = "app.log"
             }));
 
             const flowResult = await api.createKnowledgeBaseFlow(taskId);
+
+            // 停止轮询
+            clearInterval(vectorizationPollInterval);
 
             if (flowResult.status !== "success") {
               console.error("知识库创建失败:", flowResult.message);

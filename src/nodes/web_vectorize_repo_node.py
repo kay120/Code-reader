@@ -60,6 +60,7 @@ class WebVectorizeRepoNode(AsyncNode):
 
         # 1. 从后端API获取文件内容
         logger.info(f"📥 从API获取任务 {task_id} 的文件内容...")
+        await self._update_task_progress(task_id, "正在获取文件内容...")
         await asyncio.sleep(1)  # 1秒延迟让用户看到开始状态
 
         documents = await self._fetch_documents_from_api(task_id)
@@ -196,6 +197,11 @@ class WebVectorizeRepoNode(AsyncNode):
 
                     logger.info(f"处理第 {batch_num}/{total_batches} 批文档 ({len(batch)} 个文档)")
 
+                    # 更新任务进度到数据库
+                    task_id = prep_res[0]  # 从 prep_res 获取 task_id
+                    progress_msg = f"向量化进度: {batch_num}/{total_batches} 批 ({batch_num*100//total_batches}%)"
+                    await self._update_task_progress(task_id, progress_msg)
+
                     if i == 0:
                         # 第一批：创建新的知识库
                         index_name = await self._create_knowledge_base(batch, store_id)
@@ -270,3 +276,23 @@ class WebVectorizeRepoNode(AsyncNode):
         except Exception as e:
             logger.error(f"添加文档时出错: {str(e)}")
             return False
+
+    async def _update_task_progress(self, task_id: int, message: str) -> None:
+        """更新任务进度到数据库"""
+        try:
+            api_url = f"{self.api_base_url}/api/analysis/tasks/{task_id}"
+            update_data = {"current_file": message}
+
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    api_url,
+                    json=update_data,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    if response.status == 200:
+                        logger.debug(f"✅ 更新任务进度: {message}")
+                    else:
+                        logger.warning(f"更新任务进度失败: HTTP {response.status}")
+        except Exception as e:
+            logger.warning(f"更新任务进度时出错: {str(e)}")
