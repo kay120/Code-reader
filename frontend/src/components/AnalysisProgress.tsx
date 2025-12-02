@@ -778,7 +778,7 @@ log_file = "app.log"
               currentBatch: 0,
               totalBatches: 1,
               processedFiles: 0,
-              totalFiles: 0,
+              totalFiles: 1, // 设置为1以显示进度框
               currentFile: "正在启动知识库创建...",
               indexName: "",
             });
