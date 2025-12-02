@@ -271,7 +271,18 @@ async def create_task_from_zip(
                 )
             
             task = task_result["task"]
-            
+
+            # ✅ 自动触发 Celery 任务
+            try:
+                from tasks import run_analysis_task
+                celery_task = run_analysis_task.delay(
+                    task_id=task["id"],
+                    external_file_path=external_file_path
+                )
+                logger.info(f"✅ 自动触发分析任务: 任务ID {task['id']}, Celery任务ID: {celery_task.id}")
+            except Exception as e:
+                logger.error(f"自动触发分析任务失败: {e}")
+
             # 格式化文件大小
             def format_file_size(size_bytes):
                 if size_bytes == 0:
@@ -282,7 +293,7 @@ async def create_task_from_zip(
                 p = math.pow(1024, i)
                 s = round(size_bytes / p, 2)
                 return f"{s} {size_names[i]}"
-            
+
             # 返回成功响应
             return JSONResponse(
                 status_code=201,

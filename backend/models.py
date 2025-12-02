@@ -4,6 +4,7 @@
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.dialects.mysql import LONGTEXT
 
 from datetime import datetime, timezone
 
@@ -119,8 +120,8 @@ class TaskReadme(Base):
 
     id = Column(Integer, primary_key=True, index=True, comment="readme仓库ID")
     task_id = Column(Integer, ForeignKey("analysis_tasks.id"), index=True, nullable=False, comment="任务ID")
-    content = Column(Text, nullable=False, comment="readme的完整内容")
-    rendered_content = Column(Text, comment="渲染后的内容")
+    content = Column(LONGTEXT, nullable=False, comment="readme的完整内容")
+    rendered_content = Column(LONGTEXT, comment="渲染后的内容")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="创建时间")
     updated_at = Column(
         DateTime,

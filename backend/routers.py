@@ -1160,6 +1160,7 @@ async def delete_analysis_item(
 async def upload_repository(
     files: List[UploadFile] = File(...),
     repository_name: str = Form(...),
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -1167,10 +1168,12 @@ async def upload_repository(
 
     接收前端上传的整个项目文件夹，保持完整的目录结构，
     并提供详细的文件夹结构分析和统计信息。
+    上传成功后会自动创建分析任务并触发分析流程。
 
     Args:
         files: 上传的文件列表（包含完整文件夹结构）
         repository_name: 仓库名称
+        background_tasks: 后台任务
         db: 数据库会话
 
     Returns:
@@ -1179,6 +1182,7 @@ async def upload_repository(
         - 文件夹结构分析
         - 文件类型统计
         - 项目特征识别
+        - 分析任务ID
     """
     try:
         # 调用上传服务
@@ -1186,6 +1190,107 @@ async def upload_repository(
 
         if result["status"] == "error":
             return JSONResponse(status_code=400, content=result)
+
+        # 如果上传成功且创建了任务，自动触发分析
+        task_id = result.get("task_id")
+        repository_id = result.get("repository_id")
+        local_path = result.get("local_path")
+
+        if task_id and repository_id and local_path and background_tasks:
+            # 获取仓库信息
+            repository = db.query(Repository).filter(Repository.id == repository_id).first()
+            if repository:
+                repo_info = {
+                    "full_name": repository.full_name or repository.name,
+                    "name": repository.name,
+                    "local_path": repository.local_path,
+                }
+
+                # 在后台自动触发分析流程
+                async def run_analysis_pipeline():
+                    """后台运行完整的分析流程"""
+                    import sys
+                    from pathlib import Path
+
+                    # 添加项目根目录到Python路径
+                    project_root = Path(__file__).parent.parent
+                    if str(project_root) not in sys.path:
+                        sys.path.insert(0, str(project_root))
+
+                    try:
+                        from src.flows.web_flow import create_knowledge_base as create_kb_flow
+                        from src.flows.web_flow import analyze_data_model as analyze_dm_flow
+
+                        # 创建新的数据库会话
+                        from database import SessionLocal
+                        db_session = SessionLocal()
+
+                        try:
+                            # 更新任务状态为运行中
+                            task = db_session.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+                            if task:
+                                task.status = "running"
+                                db_session.commit()
+
+                            # 步骤1: 创建知识库
+                            logger.info(f"[任务 {task_id}] 开始创建知识库...")
+                            kb_result = await create_kb_flow(
+                                task_id=task_id,
+                                local_path=local_path,
+                                repo_info=repo_info
+                            )
+
+                            if kb_result.get("status") != "knowledge_base_ready":
+                                logger.error(f"[任务 {task_id}] 知识库创建失败: {kb_result}")
+                                task = db_session.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+                                if task:
+                                    task.status = "failed"
+                                    db_session.commit()
+                                return
+
+                            logger.info(f"[任务 {task_id}] 知识库创建成功")
+
+                            # 获取向量索引名称
+                            vectorstore_index = kb_result.get("vectorstore_index")
+                            if not vectorstore_index:
+                                logger.error(f"[任务 {task_id}] 知识库创建成功但未返回向量索引")
+                                task = db_session.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+                                if task:
+                                    task.status = "failed"
+                                    db_session.commit()
+                                return
+
+                            # 步骤2: 分析数据模型
+                            logger.info(f"[任务 {task_id}] 开始分析数据模型...")
+                            dm_result = await analyze_dm_flow(
+                                task_id=task_id,
+                                vectorstore_index=vectorstore_index
+                            )
+
+                            if dm_result.get("status") == "completed":
+                                logger.info(f"[任务 {task_id}] 数据模型分析成功")
+                            else:
+                                logger.error(f"[任务 {task_id}] 数据模型分析失败: {dm_result}")
+
+                        finally:
+                            db_session.close()
+
+                    except Exception as e:
+                        logger.error(f"[任务 {task_id}] 分析流程执行失败: {str(e)}")
+                        # 更新任务状态为失败
+                        from database import SessionLocal
+                        db_session = SessionLocal()
+                        try:
+                            task = db_session.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+                            if task:
+                                task.status = "failed"
+                                db_session.commit()
+                        finally:
+                            db_session.close()
+
+                # 添加后台任务
+                background_tasks.add_task(run_analysis_pipeline)
+                logger.info(f"✅ 已添加后台分析任务: 任务ID={task_id}, 仓库ID={repository_id}")
 
         return JSONResponse(status_code=200, content=result)
 
@@ -1204,17 +1309,15 @@ async def upload_repository(
 @analysis_router.post("/repository/{repository_id}/reanalyze")
 async def reanalyze_repository(
     repository_id: int,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
-    重新分析已有仓库
+    重新分析已有仓库（使用 Celery 异步任务）
 
     为已上传的仓库创建新的分析任务并自动开始分析流程
 
     Args:
         repository_id: 仓库ID
-        background_tasks: 后台任务
         db: 数据库会话
 
     Returns:
@@ -1234,12 +1337,13 @@ async def reanalyze_repository(
             )
 
         # 检查仓库路径是否存在
-        if not os.path.exists(repository.local_path):
+        repo_path = os.path.join(os.getcwd(), repository.local_path)
+        if not os.path.exists(repo_path):
             return JSONResponse(
                 status_code=400,
                 content={
                     "status": "error",
-                    "message": f"仓库路径不存在: {repository.local_path}",
+                    "message": f"仓库路径不存在: {repo_path}",
                     "repository_id": repository_id,
                 },
             )
@@ -1267,99 +1371,22 @@ async def reanalyze_repository(
             "local_path": repository.local_path,
         }
 
-        # 在后台自动触发分析流程
-        async def run_analysis_pipeline():
-            """后台运行完整的分析流程"""
-            import sys
-            from pathlib import Path
+        # 使用 Celery 异步任务执行分析流程
+        from tasks import run_analysis_task
 
-            # 添加项目根目录到Python路径
-            project_root = Path(__file__).parent.parent
-            if str(project_root) not in sys.path:
-                sys.path.insert(0, str(project_root))
+        celery_task = run_analysis_task.delay(new_task.id, repo_info)
 
-            try:
-                from src.flows.web_flow import create_knowledge_base as create_kb_flow
-                from src.flows.web_flow import analyze_data_model as analyze_dm_flow
-
-                # 创建新的数据库会话
-                from database import SessionLocal
-                db_session = SessionLocal()
-
-                try:
-                    # 更新任务状态为运行中
-                    task = db_session.query(AnalysisTask).filter(AnalysisTask.id == new_task.id).first()
-                    if task:
-                        task.status = "running"
-                        db_session.commit()
-
-                    # 步骤1: 创建知识库
-                    logger.info(f"[任务 {new_task.id}] 开始创建知识库...")
-                    kb_result = await create_kb_flow(
-                        task_id=new_task.id,
-                        local_path=repository.local_path,
-                        repo_info=repo_info
-                    )
-
-                    if kb_result.get("status") != "knowledge_base_ready":
-                        logger.error(f"[任务 {new_task.id}] 知识库创建失败: {kb_result}")
-                        task = db_session.query(AnalysisTask).filter(AnalysisTask.id == new_task.id).first()
-                        if task:
-                            task.status = "failed"
-                            db_session.commit()
-                        return
-
-                    logger.info(f"[任务 {new_task.id}] 知识库创建成功")
-
-                    # 获取向量索引名称
-                    vectorstore_index = kb_result.get("vectorstore_index")
-                    if not vectorstore_index:
-                        logger.error(f"[任务 {new_task.id}] 知识库创建成功但未返回向量索引")
-                        task = db_session.query(AnalysisTask).filter(AnalysisTask.id == new_task.id).first()
-                        if task:
-                            task.status = "failed"
-                            db_session.commit()
-                        return
-
-                    # 步骤2: 分析数据模型
-                    logger.info(f"[任务 {new_task.id}] 开始分析数据模型...")
-                    dm_result = await analyze_dm_flow(
-                        task_id=new_task.id,
-                        vectorstore_index=vectorstore_index
-                    )
-
-                    if dm_result.get("status") == "completed":
-                        logger.info(f"[任务 {new_task.id}] 数据模型分析成功")
-                    else:
-                        logger.error(f"[任务 {new_task.id}] 数据模型分析失败: {dm_result}")
-
-                finally:
-                    db_session.close()
-
-            except Exception as e:
-                logger.error(f"[任务 {new_task.id}] 分析流程执行失败: {str(e)}")
-                # 更新任务状态为失败
-                from database import SessionLocal
-                db_session = SessionLocal()
-                try:
-                    task = db_session.query(AnalysisTask).filter(AnalysisTask.id == new_task.id).first()
-                    if task:
-                        task.status = "failed"
-                        db_session.commit()
-                finally:
-                    db_session.close()
-
-        # 添加后台任务
-        background_tasks.add_task(run_analysis_pipeline)
+        logger.info(f"已提交任务 {new_task.id} 到 Celery 队列 (Celery任务ID: {celery_task.id})")
 
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
-                "message": "重新分析任务已创建并开始执行",
+                "message": "重新分析任务已创建并提交到后台队列",
                 "repository_id": repository_id,
                 "task_id": new_task.id,
                 "repository_name": repository.name,
+                "celery_task_id": celery_task.id,
             },
         )
 
@@ -2183,6 +2210,39 @@ async def compress_and_upload_folder(
             logger.warning(f"清理临时文件失败: {e}")
 
         if upload_result["success"]:
+            # 自动触发分析任务（带去重检查）
+            try:
+                from tasks import run_analysis_task
+                from models import AnalysisTask, Repository
+
+                # 查找对应的仓库和任务
+                repo = db.query(Repository).filter(Repository.local_path.like(f"%{md5_folder_name}%")).first()
+                if repo:
+                    # ✅ 先检查是否已有正在运行的任务（只检查 running 状态，不检查 pending）
+                    running_task = db.query(AnalysisTask).filter(
+                        AnalysisTask.repository_id == repo.id,
+                        AnalysisTask.status == 'running'
+                    ).first()
+
+                    if running_task:
+                        logger.info(f"⚠️ 仓库 {repo.id} 已有任务 {running_task.id} 正在运行（状态: {running_task.status}），跳过自动触发")
+                    else:
+                        # 查找最新的pending任务
+                        task = db.query(AnalysisTask).filter(
+                            AnalysisTask.repository_id == repo.id,
+                            AnalysisTask.status == 'pending'
+                        ).order_by(AnalysisTask.id.desc()).first()
+
+                        if task:
+                            # 提交Celery任务
+                            celery_task = run_analysis_task.delay(
+                                task_id=task.id,
+                                external_file_path=repo.local_path
+                            )
+                            logger.info(f"✅ 自动触发分析任务: 任务ID {task.id}, Celery任务ID: {celery_task.id}")
+            except Exception as e:
+                logger.error(f"自动触发分析任务失败: {e}")
+
             return JSONResponse(
                 status_code=200,
                 content={

@@ -1226,7 +1226,7 @@ async def analyze_data_model(
     task_id: int, vectorstore_index: str, batch_size: int = None, progress_callback=None
 ) -> Dict[str, Any]:
     """
-    分析数据模型的便捷函数 - 新版本：逐个文件分析
+    分析数据模型的便捷函数 - 异步版本：只提交任务，不等待完成
 
     Args:
         task_id: 任务ID
@@ -1246,7 +1246,7 @@ async def analyze_data_model(
     config = get_config()
     api_base_url = config.api_base_url
 
-    logger.info("🏁 ========== 开始逐个文件分析数据模型流程 ==========")
+    logger.info("🏁 ========== 开始提交文件分析任务（异步模式）==========")
 
     try:
         # 1. 先获取任务下的所有文件
@@ -1281,116 +1281,82 @@ async def analyze_data_model(
 
         logger.info(f"📁 找到 {len(files)} 个文件需要分析")
 
-        # 2. 逐个调用单文件分析接口(添加延迟以降低资源占用)
+        # 2. 批量提交所有文件分析任务（异步，不等待完成）
         total_files = len(files)
-        successful_files = 0
-        failed_files = 0
-        total_analysis_items = 0
-        analysis_results = []
+        submitted_files = 0
+        failed_submissions = 0
 
-        for i, file_info in enumerate(files, 1):
-            file_id = file_info.get("id")
-            file_path = file_info.get("file_path", "unknown")
+        logger.info(f"🚀 开始批量提交 {total_files} 个文件分析任务...")
 
-            if not file_id:
-                logger.warning(f"跳过无效文件: {file_path} (缺少ID)")
-                failed_files += 1
-                continue
+        async with aiohttp.ClientSession() as session:
+            for i, file_info in enumerate(files, 1):
+                file_id = file_info.get("id")
+                file_path = file_info.get("file_path", "unknown")
 
-            logger.info(f"📝 [{i}/{total_files}] 分析文件: {file_path} (ID: {file_id})")
+                if not file_id:
+                    logger.warning(f"跳过无效文件: {file_path} (缺少ID)")
+                    failed_submissions += 1
+                    continue
 
-            # 添加延迟以降低资源占用(除了第一个文件)
-            if i > 1:
-                sleep_time = config.analysis_sleep_between_files
-                logger.debug(f"⏱️  等待 {sleep_time}秒 以降低资源占用...")
-                await asyncio.sleep(sleep_time)
-
-            # 调用进度回调
-            if progress_callback:
+                # 调用单文件分析接口（只提交，不等待结果）
                 try:
-                    progress_callback(
-                        current_file=file_path,
-                        current_index=i,
-                        total_files=total_files,
-                        successful_files=successful_files,
-                        failed_files=failed_files,
-                    )
-                except Exception as e:
-                    logger.warning(f"Progress callback failed: {str(e)}")
-
-            # 调用单文件分析接口
-            try:
-                async with aiohttp.ClientSession() as session:
                     url = f"{api_base_url}/api/analysis/file/{file_id}/analyze-data-model"
                     params = {"task_index": vectorstore_index, "task_id": task_id}
 
                     async with session.post(url, params=params) as response:
-                        if response.status == 200:
+                        if response.status in [200, 202]:
                             result = await response.json()
-                            if result.get("status") == "success":
-                                successful_files += 1
-                                items_count = result.get("analysis_items_count", 0)
-                                total_analysis_items += items_count
-                                analysis_results.append(
-                                    {
-                                        "file_id": file_id,
-                                        "file_path": file_path,
-                                        "status": "success",
-                                        "analysis_items_count": items_count,
-                                    }
-                                )
-                                logger.info(f"✅ [{i}/{total_files}] 分析成功: {file_path} ({items_count} 个分析项)")
+                            if result.get("status") in ["success", "accepted"]:
+                                submitted_files += 1
+                                logger.info(f"✅ [{i}/{total_files}] 已提交: {file_path}")
                             else:
-                                failed_files += 1
-                                error_msg = result.get("message", "未知错误")
-                                analysis_results.append(
-                                    {"file_id": file_id, "file_path": file_path, "status": "failed", "error": error_msg}
-                                )
-                                logger.error(f"❌ [{i}/{total_files}] 分析失败: {file_path} - {error_msg}")
+                                failed_submissions += 1
+                                logger.warning(f"⚠️ [{i}/{total_files}] 提交失败: {file_path} - {result.get('message', '未知错误')}")
                         else:
-                            failed_files += 1
-                            error_data = await response.json() if response.content_type == "application/json" else {}
-                            error_msg = error_data.get("message", f"HTTP {response.status}")
-                            analysis_results.append(
-                                {"file_id": file_id, "file_path": file_path, "status": "failed", "error": error_msg}
-                            )
-                            logger.error(f"❌ [{i}/{total_files}] 分析失败: {file_path} - {error_msg}")
+                            failed_submissions += 1
+                            logger.warning(f"⚠️ [{i}/{total_files}] 提交失败: {file_path} - HTTP {response.status}")
+                except Exception as e:
+                    failed_submissions += 1
+                    logger.warning(f"⚠️ [{i}/{total_files}] 提交异常: {file_path} - {str(e)}")
 
-            except Exception as e:
-                failed_files += 1
-                error_msg = str(e)
-                analysis_results.append(
-                    {"file_id": file_id, "file_path": file_path, "status": "failed", "error": error_msg}
-                )
-                logger.error(f"❌ [{i}/{total_files}] 分析异常: {file_path} - {error_msg}")
+                # 调用进度回调
+                if progress_callback:
+                    try:
+                        progress_callback(
+                            current_file=file_path,
+                            current_index=i,
+                            total_files=total_files,
+                            successful_files=submitted_files,
+                            failed_files=failed_submissions,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Progress callback failed: {str(e)}")
 
         # 3. 汇总结果
-        success_rate = (successful_files / total_files * 100) if total_files > 0 else 0
+        success_rate = (submitted_files / total_files * 100) if total_files > 0 else 0
 
-        logger.info("🏁 ========== 逐个文件分析数据模型流程完成 ==========")
-        logger.info(f"📊 分析统计:")
+        logger.info("🏁 ========== 文件分析任务提交完成（异步模式）==========")
+        logger.info(f"📊 提交统计:")
         logger.info(f"   - 总文件数: {total_files}")
-        logger.info(f"   - 成功分析: {successful_files}")
-        logger.info(f"   - 失败分析: {failed_files}")
+        logger.info(f"   - 成功提交: {submitted_files}")
+        logger.info(f"   - 提交失败: {failed_submissions}")
         logger.info(f"   - 成功率: {success_rate:.1f}%")
-        logger.info(f"   - 总分析项: {total_analysis_items}")
+        logger.info(f"💡 注意: 任务已提交到后台队列，将异步执行")
 
         return {
-            "status": "analysis_completed",
+            "status": "analysis_submitted",  # 改为 submitted 表示已提交但未完成
             "task_id": task_id,
             "vectorstore_index": vectorstore_index,
             "total_files": total_files,
-            "successful_files": successful_files,
-            "failed_files": failed_files,
+            "submitted_files": submitted_files,
+            "failed_submissions": failed_submissions,
             "success_rate": f"{success_rate:.1f}%",
-            "analysis_items_count": total_analysis_items,
-            "analysis_results": analysis_results,
-            "message": f"完成 {total_files} 个文件的分析，成功 {successful_files} 个，失败 {failed_files} 个",
+            "message": f"已提交 {submitted_files}/{total_files} 个文件分析任务到后台队列",
         }
 
     except Exception as e:
-        logger.error(f"逐个文件分析数据模型流程失败: {str(e)}")
-        return {"status": "failed", "task_id": task_id, "error": str(e), "message": f"分析流程异常: {str(e)}"}
+        logger.error(f"提交文件分析任务失败: {str(e)}")
+        return {"status": "failed", "task_id": task_id, "error": str(e), "message": f"提交任务异常: {str(e)}"}
 
 
 async def analyze_single_file_data_model(

@@ -201,7 +201,7 @@ class FileAnalysisService:
     @staticmethod
     def create_file_analysis(file_data: dict, db: Session = None) -> dict:
         """
-        创建新的文件分析记录
+        创建新的文件分析记录（带去重检查）
 
         Args:
             file_data: 文件分析数据字典
@@ -224,6 +224,34 @@ class FileAnalysisService:
                     "status": "error",
                     "message": f"分析任务ID {file_data['task_id']} 不存在",
                     "task_id": file_data["task_id"],
+                }
+
+            # ✅ 检查是否已存在相同的文件记录（去重）
+            existing_file = db.query(FileAnalysis).filter(
+                FileAnalysis.task_id == file_data["task_id"],
+                FileAnalysis.file_path == file_data["file_path"]
+            ).first()
+
+            if existing_file:
+                # 如果已存在，更新记录而不是创建新记录
+                existing_file.language = file_data.get("language", existing_file.language)
+                existing_file.analysis_version = file_data.get("analysis_version", existing_file.analysis_version)
+                existing_file.status = file_data.get("status", existing_file.status)
+                existing_file.code_lines = file_data.get("code_lines", existing_file.code_lines)
+                existing_file.code_content = file_data.get("code_content", existing_file.code_content)
+                existing_file.file_analysis = file_data.get("file_analysis", existing_file.file_analysis)
+                existing_file.dependencies = file_data.get("dependencies", existing_file.dependencies)
+                existing_file.error_message = file_data.get("error_message", existing_file.error_message)
+
+                db.commit()
+                db.refresh(existing_file)
+
+                logger.info(f"文件记录已存在，已更新: ID {existing_file.id}, 任务ID {existing_file.task_id}, 文件路径 {existing_file.file_path}")
+
+                return {
+                    "status": "success",
+                    "message": "文件分析记录已更新（去重）",
+                    "file_analysis": existing_file.to_dict(include_code_content=True),
                 }
 
             # 创建新文件分析记录
@@ -1602,7 +1630,30 @@ class RepositoryService:
                 tasks = db.query(AnalysisTask).filter(AnalysisTask.repository_id == repository_id).all()
                 task_indices = [task.task_index for task in tasks if task.task_index]
 
-                # 删除数据库记录
+                # ✅ 先删除关联的数据（避免外键约束错误）
+                # 1. 获取所有关联的 FileAnalysis ID
+                file_ids = []
+                for task in tasks:
+                    files = db.query(FileAnalysis).filter(FileAnalysis.task_id == task.id).all()
+                    file_ids.extend([f.id for f in files])
+
+                # 2. 删除所有关联的 AnalysisItem 记录
+                if file_ids:
+                    db.query(AnalysisItem).filter(AnalysisItem.file_analysis_id.in_(file_ids)).delete(synchronize_session=False)
+
+                # 3. 删除所有关联的 FileAnalysis 记录
+                for task in tasks:
+                    db.query(FileAnalysis).filter(FileAnalysis.task_id == task.id).delete()
+
+                # 4. 删除所有关联的 TaskReadme 记录
+                task_ids = [t.id for t in tasks]
+                if task_ids:
+                    db.query(TaskReadme).filter(TaskReadme.task_id.in_(task_ids)).delete(synchronize_session=False)
+
+                # 5. 删除所有 AnalysisTask 记录
+                db.query(AnalysisTask).filter(AnalysisTask.repository_id == repository_id).delete()
+
+                # 6. 最后删除 Repository 记录
                 db.delete(repository)
                 db.commit()
 
@@ -3045,11 +3096,127 @@ class UploadService:
                     "message": f"自动压缩上传失败: {str(auto_upload_error)}"
                 }
 
+            # 自动创建分析任务（带去重检查）
+            analysis_task = None
+            try:
+                # ✅ 检查是否已有正在运行或待处理的任务
+                existing_task = db.query(AnalysisTask).filter(
+                    AnalysisTask.repository_id == repository.id,
+                    AnalysisTask.status.in_(['pending', 'running'])
+                ).first()
+
+                if existing_task:
+                    logger.info(f"⚠️ 仓库 {repository.id} 已有任务 {existing_task.id} 正在运行（状态: {existing_task.status}），跳过创建新任务")
+                    analysis_task = existing_task
+                else:
+                    analysis_task = AnalysisTask(
+                        repository_id=repository.id,
+                        status="pending",
+                        total_files=len(saved_files),
+                        successful_files=0,
+                        failed_files=0,
+                        code_lines=0,
+                        module_count=0,
+                    )
+                    db.add(analysis_task)
+                    db.commit()
+                    db.refresh(analysis_task)
+                    logger.info(f"✅ 自动创建分析任务: ID={analysis_task.id}, 仓库ID={repository.id}")
+
+                # 自动创建 FileAnalysis 记录
+                file_analysis_records = []
+                total_code_lines = 0
+                for saved_file in saved_files:
+                    file_path = saved_file.get("relative_path", saved_file.get("path", ""))
+                    extension = saved_file.get("extension", "").lower()
+
+                    # 从扩展名推断语言
+                    extension_to_language = {
+                        "py": "python",
+                        "js": "javascript",
+                        "ts": "typescript",
+                        "jsx": "javascript",
+                        "tsx": "typescript",
+                        "java": "java",
+                        "cpp": "cpp",
+                        "c": "c",
+                        "h": "c",
+                        "hpp": "cpp",
+                        "cs": "csharp",
+                        "go": "go",
+                        "rs": "rust",
+                        "rb": "ruby",
+                        "php": "php",
+                        "swift": "swift",
+                        "kt": "kotlin",
+                        "scala": "scala",
+                        "md": "markdown",
+                        "json": "json",
+                        "yaml": "yaml",
+                        "yml": "yaml",
+                        "xml": "xml",
+                        "html": "html",
+                        "css": "css",
+                        "sql": "sql",
+                        "sh": "shell",
+                        "bash": "shell",
+                    }
+                    language = extension_to_language.get(extension, "text")
+
+                    # 读取文件内容计算行数
+                    full_path = repo_path / file_path
+                    code_content = None
+                    code_lines = 0
+                    try:
+                        if full_path.exists() and full_path.is_file():
+                            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                                code_content = f.read()
+                                code_lines = len(code_content.splitlines())
+                                total_code_lines += code_lines
+                    except Exception as read_error:
+                        logger.warning(f"读取文件内容失败 {file_path}: {read_error}")
+
+                    file_analysis = FileAnalysis(
+                        task_id=analysis_task.id,
+                        file_path=file_path,
+                        language=language,
+                        analysis_version="1.0",
+                        status="pending",
+                        code_lines=code_lines,
+                        code_content=code_content,
+                    )
+                    file_analysis_records.append(file_analysis)
+
+                # 批量添加 FileAnalysis 记录
+                if file_analysis_records:
+                    db.bulk_save_objects(file_analysis_records)
+                    db.commit()
+                    logger.info(f"✅ 自动创建 {len(file_analysis_records)} 个 FileAnalysis 记录")
+
+                    # 更新任务的代码行数
+                    analysis_task.code_lines = total_code_lines
+                    db.commit()
+
+                    # ✅ 自动触发 Celery 任务
+                    try:
+                        from tasks import run_analysis_task
+                        celery_task = run_analysis_task.delay(
+                            task_id=analysis_task.id,
+                            external_file_path=str(repo_path)
+                        )
+                        logger.info(f"✅ 自动触发分析任务: 任务ID {analysis_task.id}, Celery任务ID: {celery_task.id}")
+                    except Exception as celery_error:
+                        logger.error(f"⚠️ 自动触发Celery任务失败: {celery_error}")
+
+            except Exception as task_create_error:
+                logger.error(f"创建分析任务失败: {task_create_error}")
+
             return {
                 "status": "success",
                 "message": "仓库文件夹上传成功",
                 "repository_name": clean_repo_name,
                 "repository_id": repository.id,
+                "task_id": analysis_task.id if analysis_task else None,
                 "local_path": str(repo_path),
                 "md5_directory_name": md5_dir_name,  # 添加MD5目录名信息
                 "upload_summary": {

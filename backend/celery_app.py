@@ -71,12 +71,12 @@ celery_app.conf.update(
     worker_max_tasks_per_child=200,  # 每个worker处理200个任务后重启,防止内存泄漏
     worker_concurrency=int(os.getenv("CELERY_WORKER_CONCURRENCY", "10")),  # 默认10,可通过环境变量覆盖
 
-    # 任务路由 - 注释掉，使用默认队列 celery
-    # task_routes={
-    #     "tasks.run_analysis_task": {"queue": "analysis"},
-    #     "tasks.analyze_single_file_task": {"queue": "analysis"},
-    #     "tasks.batch_analyze_files_task": {"queue": "analysis"},
-    # },
+    # 任务路由 - 将任务路由到 analysis 队列
+    task_routes={
+        "tasks.run_analysis_task": {"queue": "analysis"},
+        "tasks.analyze_single_file_task": {"queue": "analysis"},
+        "tasks.batch_analyze_files_task": {"queue": "analysis"},
+    },
 
     # 任务时间限制
     task_time_limit=7200,  # 2小时硬限制(完整分析任务可能需要更长时间)

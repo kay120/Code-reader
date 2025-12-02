@@ -607,11 +607,32 @@ async def execute_step_2_analyze_data_model(task_id: int, vectorstore_index: str
 
         logger.info(f"调用分析数据模型flow - 向量索引: {vectorstore_index}")
 
-        # 执行分析数据模型flow
+        # 执行分析数据模型flow（异步模式：只提交任务，不等待完成）
         result = await analyze_dm_flow(task_id=task_id, vectorstore_index=vectorstore_index)
 
         # 检查flow执行结果
-        if result.get("status") == "analysis_completed":
+        if result.get("status") == "analysis_submitted":
+            # 异步模式：任务已提交到队列
+            total_files = result.get("total_files", 0)
+            submitted_files = result.get("submitted_files", 0)
+            failed_submissions = result.get("failed_submissions", 0)
+            success_rate = result.get("success_rate", "0%")
+
+            logger.info(
+                f"✅ 分析任务已提交: 总文件 {total_files}, 成功提交 {submitted_files}, 提交失败 {failed_submissions}"
+            )
+            logger.info(f"💡 任务将在后台异步执行，不阻塞主流程")
+
+            return {
+                "success": True,
+                "message": result.get("message", "分析任务已提交到后台队列"),
+                "total_files": total_files,
+                "submitted_files": submitted_files,
+                "failed_submissions": failed_submissions,
+                "success_rate": success_rate,
+            }
+        elif result.get("status") == "analysis_completed":
+            # 兼容旧版本：同步模式
             analysis_items_count = result.get("analysis_items_count", 0)
             total_files = result.get("total_files", 0)
             successful_files = result.get("successful_files", 0)
@@ -1031,35 +1052,21 @@ async def run_task(task_id: int, external_file_path: str):
 
             logger.info(f"步骤2完成: {step2_result['message']}")
 
-            # 步骤3: 生成文档结构
-            logger.info("=== 开始执行步骤3: 生成文档结构 ===")
+            # ========== 异步模式：步骤 2 完成后立即结束，释放 Worker ==========
+            # 步骤 3 将在所有文件分析完成后自动触发
 
-            step3_result = await execute_step_3_generate_document_structure(task_id, external_file_path, repo_info)
-
-            if not step3_result["success"]:
-                logger.warning(f"步骤3失败(不影响整体任务): {step3_result['message']}")
-                # 步骤3失败不影响整体任务状态,仍然标记为完成
-                # 用户可以查看文件分析结果,只是没有生成的文档
-                step3_result["success"] = True
-                step3_result["message"] = f"文档生成失败,但文件分析已完成: {step3_result.get('message', '未知错误')}"
-            else:
-                logger.info(f"步骤3完成: {step3_result['message']}")
-
-            # ========== 所有步骤完成 ==========
-
-            # 更新任务状态为完成
+            # 更新任务状态为 processing（表示正在后台处理）
             if task_obj:
-                task_obj.status = "completed"
-                task_obj.end_time = datetime.now()
-                task_obj.progress_percentage = 100
-                task_obj.current_file = None  # 清空当前处理文件
+                task_obj.status = "processing"  # 改为 processing，表示文件分析正在后台执行
+                task_obj.progress_percentage = 50  # 步骤 0-1 完成，步骤 2 已提交
                 db.commit()
 
-            logger.info(f"任务 {task_id} 所有步骤执行完成")
+            logger.info(f"✅ 任务 {task_id} 步骤 0-2 完成，文件分析任务已提交到后台队列")
+            logger.info(f"💡 步骤 3（生成文档）将在所有文件分析完成后自动触发")
 
             return {
                 "status": "success",
-                "message": "任务执行完成",
+                "message": "任务已提交到后台队列，正在异步执行",
                 "task_id": task_id,
                 "step0_result": step0_result,
                 "step1_result": step1_result,
