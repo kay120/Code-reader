@@ -225,7 +225,8 @@ export default function AnalysisProgress({
             })
             .catch((error: any) => {
               console.error("❌ 任务验证失败:", error);
-              if (error.message && error.message.includes("404")) {
+              // 检查是否是 404 错误（任务不存在）
+              if (error.message && (error.message.includes("404") || error.message.includes("status: 404"))) {
                 console.error("任务不存在，清除缓存并跳转到首页");
                 sessionStorage.removeItem("currentTaskInfo");
                 sessionStorage.removeItem("analysisConfig");
@@ -857,7 +858,7 @@ log_file = "app.log"
 	              } catch (error: any) {
 	                console.warn("获取任务详情失败:", error);
 	                // 如果是 404 错误，说明任务不存在，清除缓存并跳转
-	                if (error.message && error.message.includes("404")) {
+	                if (error.message && (error.message.includes("404") || error.message.includes("status: 404"))) {
 	                  console.error("任务不存在，清除缓存并跳转到首页");
 	                  sessionStorage.removeItem("currentTaskInfo");
 	                  sessionStorage.removeItem("analysisConfig");
