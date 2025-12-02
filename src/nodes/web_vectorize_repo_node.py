@@ -279,7 +279,7 @@ class WebVectorizeRepoNode(AsyncNode):
     async def _update_task_progress(self, task_id: int, message: str) -> None:
         """更新任务进度到数据库"""
         try:
-            api_url = f"{self.api_base_url}/api/analysis-tasks/{task_id}"
+            api_url = f"{self.api_base_url}/api/repository/analysis-tasks/{task_id}"
             update_data = {"current_file": message}
 
             async with aiohttp.ClientSession() as session:

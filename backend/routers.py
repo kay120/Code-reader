@@ -78,6 +78,7 @@ class AnalysisTaskUpdate(BaseModel):
     start_time: Optional[str] = Field(None, description="开始时间（ISO格式）")
     end_time: Optional[str] = Field(None, description="结束时间（ISO格式）")
     task_index: Optional[str] = Field(None, description="任务索引")
+    current_file: Optional[str] = Field(None, description="当前处理的文件")
 
 
 class FileAnalysisCreate(BaseModel):
