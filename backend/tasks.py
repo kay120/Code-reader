@@ -151,6 +151,14 @@ def analyze_single_file_task(self, task_id: int, file_id: int, vectorstore_index
 
                     logger.info(f"📊 任务 {task_id} 进度: {completed_files}/{total_files} 完成, {failed_files} 失败, {pending_files} 待处理")
 
+                    # 更新任务的统计信息
+                    task = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+                    if task:
+                        task.successful_files = completed_files
+                        task.failed_files = failed_files
+                        db.commit()
+                        logger.debug(f"📝 更新任务 {task_id} 统计: 成功 {completed_files}, 失败 {failed_files}")
+
                     # 如果所有文件都已处理完成（成功或失败），触发步骤 3
                     if pending_files == 0:
                         logger.info(f"🎉 任务 {task_id} 所有文件分析完成！准备触发步骤 3（生成文档）")

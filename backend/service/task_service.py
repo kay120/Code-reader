@@ -1001,8 +1001,10 @@ async def run_task(task_id: int, external_file_path: str):
             # 更新任务统计信息
             if task_obj:
                 task_obj.total_files = step0_result.get("total_files", 0)
-                task_obj.successful_files = step0_result.get("successful_files", 0)
-                task_obj.failed_files = step0_result.get("failed_files", 0)
+                # 注意：步骤 0 只是扫描文件，不更新 successful_files
+                # successful_files 应该在文件实际分析完成时更新
+                task_obj.successful_files = 0  # 初始化为 0
+                task_obj.failed_files = 0  # 初始化为 0
                 task_obj.code_lines = step0_result.get("total_code_lines", 0)
                 db.commit()
 
@@ -1071,7 +1073,6 @@ async def run_task(task_id: int, external_file_path: str):
                 "step0_result": step0_result,
                 "step1_result": step1_result,
                 "step2_result": step2_result,
-                "step3_result": step3_result,
             }
 
         except Exception as e:
