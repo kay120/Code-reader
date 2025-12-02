@@ -197,17 +197,44 @@ export default function AnalysisProgress({
         const parsedTaskInfo = JSON.parse(taskInfo);
         console.log("✅ 解析任务信息成功:", parsedTaskInfo);
 
-        setTaskId(parsedTaskInfo.taskId);
-        setMd5DirectoryName(parsedTaskInfo.md5DirectoryName);
-        setFileList(
-          parsedTaskInfo.fileList || analysisConfig.selectedFiles || []
-        );
+        const taskIdFromStorage = parsedTaskInfo.taskId;
 
-        console.log("🆔 设置任务ID:", parsedTaskInfo.taskId);
-        console.log(
-          "📁 设置文件列表长度:",
-          (parsedTaskInfo.fileList || analysisConfig.selectedFiles || []).length
-        );
+        // 验证任务是否存在
+        if (taskIdFromStorage) {
+          api.getAnalysisTaskDetail(taskIdFromStorage)
+            .then((taskDetail) => {
+              if (taskDetail.status === "success" && taskDetail.task) {
+                console.log("✅ 任务验证成功，任务存在");
+                setTaskId(taskIdFromStorage);
+                setMd5DirectoryName(parsedTaskInfo.md5DirectoryName);
+                setFileList(
+                  parsedTaskInfo.fileList || analysisConfig.selectedFiles || []
+                );
+
+                console.log("🆔 设置任务ID:", taskIdFromStorage);
+                console.log(
+                  "📁 设置文件列表长度:",
+                  (parsedTaskInfo.fileList || analysisConfig.selectedFiles || []).length
+                );
+              } else {
+                console.error("❌ 任务不存在，清除缓存");
+                sessionStorage.removeItem("currentTaskInfo");
+                sessionStorage.removeItem("analysisConfig");
+                navigate("/");
+              }
+            })
+            .catch((error: any) => {
+              console.error("❌ 任务验证失败:", error);
+              if (error.message && error.message.includes("404")) {
+                console.error("任务不存在，清除缓存并跳转到首页");
+                sessionStorage.removeItem("currentTaskInfo");
+                sessionStorage.removeItem("analysisConfig");
+                navigate("/");
+              }
+            });
+        } else {
+          setFileList(analysisConfig.selectedFiles || []);
+        }
       } catch (error) {
         console.error("❌ 解析任务信息失败:", error);
         setFileList(analysisConfig.selectedFiles || []);
@@ -827,8 +854,16 @@ log_file = "app.log"
 	                    }));
 	                  }
 	                }
-	              } catch (error) {
+	              } catch (error: any) {
 	                console.warn("获取任务详情失败:", error);
+	                // 如果是 404 错误，说明任务不存在，清除缓存并跳转
+	                if (error.message && error.message.includes("404")) {
+	                  console.error("任务不存在，清除缓存并跳转到首页");
+	                  sessionStorage.removeItem("currentTaskInfo");
+	                  sessionStorage.removeItem("analysisConfig");
+	                  clearInterval(pollInterval);
+	                  navigate("/");
+	                }
 	              }
 	            }, 2000); // 每2秒轮询一次
 
