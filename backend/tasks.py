@@ -17,7 +17,7 @@ from celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="tasks.run_analysis_task", bind=True)
+@celery_app.task(name="tasks.run_analysis_task", bind=True, max_retries=0)
 def run_analysis_task(self, task_id: int, external_file_path: str):
     """
     Celery异步任务: 运行完整的分析任务
@@ -35,8 +35,38 @@ def run_analysis_task(self, task_id: int, external_file_path: str):
     Returns:
         dict: 任务执行结果
     """
+    # ========== 任务去重检查 ==========
+    from database import SessionLocal
+    from models import AnalysisTask
+
+    db = SessionLocal()
     try:
-        logger.info(f"🚀 Celery任务开始: 运行分析任务 {task_id}")
+        task_obj = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+        if not task_obj:
+            logger.error(f"❌ 任务 {task_id} 不存在")
+            return {"status": "error", "message": f"任务 {task_id} 不存在"}
+
+        # 如果任务已经在运行中，检查是否有其他 Celery 任务正在处理
+        if task_obj.status == 'running':
+            # 检查是否有其他活跃的 Celery 任务在处理这个任务
+            inspect = celery_app.control.inspect()
+            active_tasks = inspect.active()
+            if active_tasks:
+                for worker, tasks in active_tasks.items():
+                    for task in tasks:
+                        if task['name'] == 'tasks.run_analysis_task':
+                            # 检查任务参数中的 task_id
+                            task_args = task.get('args', [])
+                            if task_args and len(task_args) > 0 and task_args[0] == task_id:
+                                # 如果不是当前任务，说明有重复
+                                if task['id'] != self.request.id:
+                                    logger.warning(f"⚠️ 任务 {task_id} 已有其他 Celery 任务 {task['id'][:8]}... 正在处理，当前任务 {self.request.id[:8]}... 退出")
+                                    return {"status": "skipped", "message": f"任务 {task_id} 已有其他任务正在处理"}
+    finally:
+        db.close()
+
+    try:
+        logger.info(f"🚀 Celery任务开始: 运行分析任务 {task_id} (Celery ID: {self.request.id[:8]}...)")
 
         # 导入run_task函数(延迟导入避免循环依赖)
         import sys
