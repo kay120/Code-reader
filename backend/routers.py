@@ -1349,6 +1349,78 @@ async def reanalyze_repository(
                 },
             )
 
+        # ========== 检查是否有可恢复的失败任务 ==========
+        failed_task = db.query(AnalysisTask).filter(
+            AnalysisTask.repository_id == repository_id,
+            AnalysisTask.status == 'failed'
+        ).order_by(AnalysisTask.id.desc()).first()
+
+        # 如果有失败任务且已经完成了部分文件，恢复该任务
+        if failed_task and failed_task.successful_files > 0:
+            logger.info(f"🔄 发现可恢复的失败任务 {failed_task.id}，已完成 {failed_task.successful_files}/{failed_task.total_files} 个文件")
+
+            # 停止正在运行的任务
+            running_tasks = db.query(AnalysisTask).filter(
+                AnalysisTask.repository_id == repository_id,
+                AnalysisTask.status.in_(['running', 'pending'])
+            ).all()
+
+            if running_tasks:
+                from tasks import celery_app
+
+                for old_task in running_tasks:
+                    logger.info(f"⚠️ 发现仓库 {repository_id} 的旧任务 {old_task.id}（状态: {old_task.status}），准备停止")
+
+                    # 尝试找到并撤销对应的 Celery 任务
+                    try:
+                        inspect = celery_app.control.inspect()
+                        active_tasks = inspect.active()
+
+                        if active_tasks:
+                            for worker, tasks in active_tasks.items():
+                                for task in tasks:
+                                    if task['name'] == 'tasks.run_analysis_task':
+                                        task_args = task.get('args', [])
+                                        if task_args and len(task_args) > 0 and task_args[0] == old_task.id:
+                                            celery_task_id = task['id']
+                                            celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
+                                            logger.info(f"✅ 已撤销 Celery 任务 {celery_task_id[:8]}... (对应任务 {old_task.id})")
+                    except Exception as e:
+                        logger.warning(f"撤销 Celery 任务时出错: {str(e)}")
+
+                    old_task.status = 'cancelled'
+                    logger.info(f"✅ 已将任务 {old_task.id} 状态更新为 cancelled")
+
+                db.commit()
+                logger.info(f"✅ 已停止仓库 {repository_id} 的 {len(running_tasks)} 个旧任务")
+
+            # 恢复失败任务
+            failed_task.status = 'pending'
+            failed_task.end_time = None
+            db.commit()
+
+            logger.info(f"✅ 恢复任务 {failed_task.id}，将继续分析剩余的 {failed_task.total_files - failed_task.successful_files} 个文件")
+
+            # 提交到 Celery
+            from tasks import run_analysis_task
+            run_analysis_task.delay(failed_task.id, repository.local_path)
+
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "message": f"已恢复任务 {failed_task.id}，继续分析",
+                    "task": {
+                        "id": failed_task.id,
+                        "repository_id": repository_id,
+                        "status": failed_task.status,
+                        "total_files": failed_task.total_files,
+                        "successful_files": failed_task.successful_files,
+                        "failed_files": failed_task.failed_files,
+                    },
+                },
+            )
+
         # ========== 停止正在运行的任务 ==========
         running_tasks = db.query(AnalysisTask).filter(
             AnalysisTask.repository_id == repository_id,
@@ -1363,7 +1435,6 @@ async def reanalyze_repository(
 
                 # 尝试找到并撤销对应的 Celery 任务
                 try:
-                    # 获取所有活跃的 Celery 任务
                     inspect = celery_app.control.inspect()
                     active_tasks = inspect.active()
 
@@ -1371,17 +1442,14 @@ async def reanalyze_repository(
                         for worker, tasks in active_tasks.items():
                             for task in tasks:
                                 if task['name'] == 'tasks.run_analysis_task':
-                                    # 检查任务参数中的 task_id
                                     task_args = task.get('args', [])
                                     if task_args and len(task_args) > 0 and task_args[0] == old_task.id:
-                                        # 撤销 Celery 任务
                                         celery_task_id = task['id']
                                         celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
                                         logger.info(f"✅ 已撤销 Celery 任务 {celery_task_id[:8]}... (对应任务 {old_task.id})")
                 except Exception as e:
                     logger.warning(f"撤销 Celery 任务时出错: {str(e)}")
 
-                # 更新数据库中的任务状态为 cancelled
                 old_task.status = 'cancelled'
                 logger.info(f"✅ 已将任务 {old_task.id} 状态更新为 cancelled")
 

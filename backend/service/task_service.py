@@ -971,7 +971,8 @@ async def run_task(task_id: int, external_file_path: str):
             task_obj = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
             if task_obj:
                 task_obj.status = "running"
-                task_obj.start_time = datetime.now()
+                if not task_obj.start_time:  # 只在第一次运行时设置开始时间
+                    task_obj.start_time = datetime.now()
                 db.commit()
 
             logger.info(f"任务 {task_id} 使用仓库路径: {local_path}")
@@ -983,53 +984,78 @@ async def run_task(task_id: int, external_file_path: str):
                 "local_path": local_path,
             }
 
+            # ========== 检查是否是恢复任务 ==========
+            is_resume = False
+            vectorstore_index = None
+
+            if task_obj and task_obj.task_index:
+                # 如果已有 task_index，说明步骤0和步骤1已完成
+                is_resume = True
+                vectorstore_index = task_obj.task_index
+                logger.info(f"🔄 检测到恢复任务，跳过步骤0和步骤1，使用已有索引: {vectorstore_index}")
+                logger.info(f"📊 当前进度: {task_obj.successful_files}/{task_obj.total_files} 个文件已完成")
+
             # ========== 执行4个分析步骤 ==========
 
-            # 步骤0: 扫描代码文件
-            logger.info("=== 开始执行步骤0: 扫描代码文件 ===")
-            step0_result = await execute_step_0_scan_files(task_id, local_path, db)
+            if not is_resume:
+                # 步骤0: 扫描代码文件
+                logger.info("=== 开始执行步骤0: 扫描代码文件 ===")
+                step0_result = await execute_step_0_scan_files(task_id, local_path, db)
 
-            if not step0_result["success"]:
-                logger.error(f"步骤0失败: {step0_result['message']}")
-                # 更新任务状态为失败
+                if not step0_result["success"]:
+                    logger.error(f"步骤0失败: {step0_result['message']}")
+                    # 更新任务状态为失败
+                    if task_obj:
+                        task_obj.status = "failed"
+                        task_obj.end_time = datetime.now()
+                        db.commit()
+                    return {"status": "error", "message": f"步骤0失败: {step0_result['message']}"}
+
+                # 更新任务统计信息
                 if task_obj:
-                    task_obj.status = "failed"
-                    task_obj.end_time = datetime.now()
+                    task_obj.total_files = step0_result.get("total_files", 0)
+                    # 注意：步骤 0 只是扫描文件，不更新 successful_files
+                    # successful_files 应该在文件实际分析完成时更新
+                    task_obj.successful_files = 0  # 初始化为 0
+                    task_obj.failed_files = 0  # 初始化为 0
+                    task_obj.code_lines = step0_result.get("total_code_lines", 0)
                     db.commit()
-                return {"status": "error", "message": f"步骤0失败: {step0_result['message']}"}
 
-            # 更新任务统计信息
-            if task_obj:
-                task_obj.total_files = step0_result.get("total_files", 0)
-                # 注意：步骤 0 只是扫描文件，不更新 successful_files
-                # successful_files 应该在文件实际分析完成时更新
-                task_obj.successful_files = 0  # 初始化为 0
-                task_obj.failed_files = 0  # 初始化为 0
-                task_obj.code_lines = step0_result.get("total_code_lines", 0)
-                db.commit()
+                logger.info(f"步骤0完成: {step0_result['message']}")
 
-            logger.info(f"步骤0完成: {step0_result['message']}")
+                # 步骤1: 知识库创建
+                logger.info("=== 开始执行步骤1: 知识库创建 ===")
+                step1_result = await execute_step_1_create_knowledge_base(task_id, local_path, repo_info)
 
-            # 步骤1: 知识库创建
-            logger.info("=== 开始执行步骤1: 知识库创建 ===")
-            step1_result = await execute_step_1_create_knowledge_base(task_id, local_path, repo_info)
+                if not step1_result["success"]:
+                    logger.error(f"步骤1失败: {step1_result['message']}")
+                    if task_obj:
+                        task_obj.status = "failed"
+                        task_obj.end_time = datetime.now()
+                        db.commit()
+                    return {"status": "error", "message": f"步骤1失败: {step1_result['message']}"}
 
-            if not step1_result["success"]:
-                logger.error(f"步骤1失败: {step1_result['message']}")
-                if task_obj:
-                    task_obj.status = "failed"
-                    task_obj.end_time = datetime.now()
+                vectorstore_index = step1_result.get("vectorstore_index")
+
+                # 更新任务索引
+                if task_obj and vectorstore_index:
+                    task_obj.task_index = vectorstore_index
                     db.commit()
-                return {"status": "error", "message": f"步骤1失败: {step1_result['message']}"}
 
-            vectorstore_index = step1_result.get("vectorstore_index")
-
-            # 更新任务索引
-            if task_obj and vectorstore_index:
-                task_obj.task_index = vectorstore_index
-                db.commit()
-
-            logger.info(f"步骤1完成: {step1_result['message']}")
+                logger.info(f"步骤1完成: {step1_result['message']}")
+            else:
+                # 恢复任务，使用已有的统计信息
+                step0_result = {
+                    "success": True,
+                    "message": "跳过步骤0（恢复任务）",
+                    "total_files": task_obj.total_files,
+                    "total_code_lines": task_obj.code_lines,
+                }
+                step1_result = {
+                    "success": True,
+                    "message": "跳过步骤1（恢复任务）",
+                    "vectorstore_index": vectorstore_index,
+                }
 
             # 步骤2: 分析数据模型
             logger.info("=== 开始执行步骤2: 分析数据模型 ===")
