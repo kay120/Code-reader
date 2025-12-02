@@ -784,16 +784,21 @@ log_file = "app.log"
             });
 
             // 启动轮询来更新向量化进度
+            console.log("🔄 启动向量化进度轮询，taskId:", taskId);
             const vectorizationPollInterval = setInterval(async () => {
               try {
                 const taskDetail = await api.getAnalysisTaskDetail(taskId);
                 if (taskDetail.status === "success" && taskDetail.task) {
                   const currentFile = taskDetail.task.current_file;
+                  console.log("📊 轮询获取到 current_file:", currentFile);
                   if (currentFile) {
-                    setVectorizationProgress(prev => ({
-                      ...prev,
-                      currentFile: currentFile,
-                    }));
+                    setVectorizationProgress(prev => {
+                      console.log("✅ 更新 vectorizationProgress.currentFile:", currentFile);
+                      return {
+                        ...prev,
+                        currentFile: currentFile,
+                      };
+                    });
                   }
                 }
               } catch (error: any) {
@@ -1643,8 +1648,10 @@ log_file = "app.log"
                   <Progress value={progress} className="h-2" />
 
                   {/* 向量化进度详情 - 只在知识库创建步骤时显示 */}
-                  {currentStep === 1 &&
-                    vectorizationProgress.totalFiles > 0 && (
+                  {(() => {
+                    console.log("🔍 渲染检查 - currentStep:", currentStep, "totalFiles:", vectorizationProgress.totalFiles, "currentFile:", vectorizationProgress.currentFile);
+                    return currentStep === 1 && vectorizationProgress.totalFiles > 0;
+                  })() && (
                       <Card className="p-4 bg-blue-50 border-blue-200">
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
