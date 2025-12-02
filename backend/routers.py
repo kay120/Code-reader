@@ -1355,8 +1355,9 @@ async def reanalyze_repository(
             AnalysisTask.status == 'failed'
         ).order_by(AnalysisTask.id.desc()).first()
 
-        # 如果有失败任务且已经完成了部分文件，恢复该任务
-        if failed_task and failed_task.successful_files > 0:
+        # 如果有失败任务且向量化已完成（有 task_index），恢复该任务
+        # 不管 successful_files 是否 > 0，只要向量化完成就可以恢复
+        if failed_task and failed_task.task_index:
             logger.info(f"🔄 发现可恢复的失败任务 {failed_task.id}，已完成 {failed_task.successful_files}/{failed_task.total_files} 个文件")
 
             # 停止正在运行的任务
