@@ -335,7 +335,24 @@ export default function ChatInterface({
   console.log("ChatInterface - currentRepository:", currentRepository);
   console.log("ChatInterface - sessionId:", sessionId);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // ✅ 从 localStorage 加载历史消息
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem(`chat_history_${sessionId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // 恢复 Date 对象
+        return parsed.map((msg: any) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp)
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to load chat history:', error);
+    }
+    return [];
+  });
+
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sessionValid, setSessionValid] = useState<boolean | null>(null); // null = 未检查, true = 有效, false = 无效
@@ -348,6 +365,17 @@ export default function ChatInterface({
   const [toolCallsExpanded, setToolCallsExpanded] = useState<Record<string, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // ✅ 保存历史消息到 localStorage
+  useEffect(() => {
+    if (messages.length > 0) {
+      try {
+        localStorage.setItem(`chat_history_${sessionId}`, JSON.stringify(messages));
+      } catch (error) {
+        console.error('Failed to save chat history:', error);
+      }
+    }
+  }, [messages, sessionId]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
