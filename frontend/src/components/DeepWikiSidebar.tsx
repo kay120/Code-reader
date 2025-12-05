@@ -9,6 +9,7 @@ import {
   FileText,
   Loader2,
   MessageCircle,
+  GitBranch,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { api } from "../services/api";
@@ -381,6 +382,25 @@ export function Sidebar({
         >
           <BarChart3 className="h-4 w-4 mr-2" />
           <span className="text-sm">项目概览</span>
+        </Button>
+
+        {/* 代码可视化 - 新增 */}
+        <Button
+          variant="ghost"
+          className={`
+            w-full justify-start px-2 py-1 h-auto transition-all duration-100
+            ${
+              activeSection === "visualization"
+                ? "bg-blue-100 text-blue-700"
+                : "text-gray-700 hover:bg-gray-100"
+            }
+          `}
+          onClick={() => {
+            onSectionChange("visualization");
+          }}
+        >
+          <GitBranch className="h-4 w-4 mr-2" />
+          <span className="text-sm">代码可视化</span>
         </Button>
       </div>
 

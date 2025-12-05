@@ -225,13 +225,17 @@ export default function DeepWikiInterface({
             setCurrentTaskId(latestTask.id);
 
             // 5. 提取任务统计信息（立即显示）
+            console.log("🔍 [DEBUG] latestTask 完整数据:", latestTask);
+            console.log("🔍 [DEBUG] latestTask.code_lines:", latestTask.code_lines);
+            console.log("🔍 [DEBUG] latestTask.module_count:", latestTask.module_count);
+
             const statistics = {
-                code_lines: (latestTask as any).code_lines || 0,
+                code_lines: latestTask.code_lines || 0,
                 total_files: latestTask.total_files || 0,
-                module_count: (latestTask as any).module_count || 0,
+                module_count: latestTask.module_count || 0,
             };
             setTaskStatistics(statistics);
-            console.log("Task statistics:", statistics);
+            console.log("🔍 [DEBUG] Task statistics 设置为:", statistics);
 
             // 6. 立即结束 loading 状态，让页面可以显示
             setIsLoading(false);
@@ -339,12 +343,12 @@ export default function DeepWikiInterface({
         }
     }, [fullNameHash]);
 
-    // 组件卸载时清理Context状态
-    useEffect(() => {
-        return () => {
-            setCurrentRepository(null);
-        };
-    }, [setCurrentRepository]);
+    // 注释掉组件卸载时清理Context状态，因为切换到 chat 页面时需要保留 currentRepository
+    // useEffect(() => {
+    //     return () => {
+    //         setCurrentRepository(null);
+    //     };
+    // }, [setCurrentRepository]);
 
     return (
         <div className="h-full flex flex-col bg-white">

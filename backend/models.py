@@ -213,6 +213,7 @@ class AnalysisTask(Base):
     start_time = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="开始时间")
     end_time = Column(DateTime, comment="结束时间")
     task_index = Column(String(255), index=True, comment="任务索引")
+    deepwiki_task_id = Column(String(255), comment="DeepWiki文档生成任务ID")
 
     # 注意：repository 关系可以通过 repository_id 外键访问
 
@@ -234,4 +235,5 @@ class AnalysisTask(Base):
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "task_index": self.task_index,
+            "deepwiki_task_id": self.deepwiki_task_id,
         }

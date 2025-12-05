@@ -99,6 +99,7 @@ export default function ProjectCard({ repository, onDelete }: ProjectCardProps) 
         const statusMap = {
             pending: { text: "等待中", color: "text-yellow-600", icon: Clock },
             running: { text: "分析中", color: "text-blue-600", icon: Clock },
+            processing: { text: "分析中", color: "text-blue-600", icon: Clock },
             completed: {
                 text: "已完成",
                 color: "text-green-600",
@@ -112,8 +113,8 @@ export default function ProjectCard({ repository, onDelete }: ProjectCardProps) 
             statusMap.pending;
         const StatusIcon = status.icon;
 
-        // 如果是运行中,显示进度
-        if (latestTask.status === "running") {
+        // 如果是运行中或处理中,显示进度
+        if (latestTask.status === "running" || latestTask.status === "processing") {
             // 根据文件进度和task_index判断当前步骤和整体进度
             const successfulFiles = latestTask.successful_files || 0;
             const totalFiles = latestTask.total_files || 0;

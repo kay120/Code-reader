@@ -35,33 +35,37 @@ def run_analysis_task(self, task_id: int, external_file_path: str):
     Returns:
         dict: 任务执行结果
     """
-    # ========== 任务去重检查 ==========
+    # ========== 任务去重检查（使用数据库锁） ==========
     from database import SessionLocal
     from models import AnalysisTask
+    from sqlalchemy import text
 
     db = SessionLocal()
     try:
-        task_obj = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+        # 使用 SELECT FOR UPDATE 获取行锁，防止并发执行
+        task_obj = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).with_for_update(nowait=False).first()
         if not task_obj:
             logger.error(f"❌ 任务 {task_id} 不存在")
             return {"status": "error", "message": f"任务 {task_id} 不存在"}
 
-        # 如果任务已经在运行中，检查是否有其他 Celery 任务正在处理
+        # 如果任务已经在运行中，说明有其他 worker 正在处理
         if task_obj.status == 'running':
-            # 检查是否有其他活跃的 Celery 任务在处理这个任务
-            inspect = celery_app.control.inspect()
-            active_tasks = inspect.active()
-            if active_tasks:
-                for worker, tasks in active_tasks.items():
-                    for task in tasks:
-                        if task['name'] == 'tasks.run_analysis_task':
-                            # 检查任务参数中的 task_id
-                            task_args = task.get('args', [])
-                            if task_args and len(task_args) > 0 and task_args[0] == task_id:
-                                # 如果不是当前任务，说明有重复
-                                if task['id'] != self.request.id:
-                                    logger.warning(f"⚠️ 任务 {task_id} 已有其他 Celery 任务 {task['id'][:8]}... 正在处理，当前任务 {self.request.id[:8]}... 退出")
-                                    return {"status": "skipped", "message": f"任务 {task_id} 已有其他任务正在处理"}
+            logger.warning(f"⚠️ 任务 {task_id} 已经在运行中，当前任务 {self.request.id[:8]}... 退出")
+            return {"status": "skipped", "message": f"任务 {task_id} 已有其他任务正在处理"}
+
+        # 如果任务状态是 cancelled，也退出
+        if task_obj.status == 'cancelled':
+            logger.warning(f"⚠️ 任务 {task_id} 已被取消，当前任务 {self.request.id[:8]}... 退出")
+            return {"status": "skipped", "message": f"任务 {task_id} 已被取消"}
+
+        # 立即将任务状态设置为 running，防止其他 worker 执行
+        task_obj.status = 'running'
+        db.commit()
+        logger.info(f"✅ 任务 {task_id} 状态已设置为 running (Celery ID: {self.request.id[:8]}...)")
+    except Exception as e:
+        logger.error(f"❌ 任务去重检查失败: {str(e)}")
+        db.rollback()
+        return {"status": "error", "message": f"任务去重检查失败: {str(e)}"}
     finally:
         db.close()
 
@@ -193,9 +197,24 @@ def analyze_single_file_task(self, task_id: int, file_id: int, vectorstore_index
                     if pending_files == 0:
                         logger.info(f"🎉 任务 {task_id} 所有文件分析完成！准备触发步骤 3（生成文档）")
 
+                        # 统计分析项数量（类、函数等）
+                        from models import AnalysisItem
+                        total_analysis_items = 0
+                        for file_analysis in all_files:
+                            items_count = db.query(AnalysisItem).filter(
+                                AnalysisItem.file_analysis_id == file_analysis.id
+                            ).count()
+                            total_analysis_items += items_count
+
+                        logger.info(f"📊 任务 {task_id} 总分析项数: {total_analysis_items}")
+
                         # 获取任务信息
                         task = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
                         if task:
+                            # 更新模块数量
+                            task.module_count = total_analysis_items
+                            db.commit()
+                            logger.info(f"✅ 已更新任务 {task_id} 的 module_count: {total_analysis_items}")
                             # 获取仓库信息
                             from models import Repository
                             repository = db.query(Repository).filter(Repository.id == task.repository_id).first()

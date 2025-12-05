@@ -26,6 +26,8 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { chatApi } from "../services/chat-api";
+import { api } from "../services/api";
+import { useProject } from "../contexts/ProjectContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -327,9 +329,17 @@ export default function ChatInterface({
   currentVersionId,
   sessionId,
 }: ChatInterfaceProps) {
+  const { currentRepository } = useProject();
+
+  // 调试日志
+  console.log("ChatInterface - currentRepository:", currentRepository);
+  console.log("ChatInterface - sessionId:", sessionId);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [sessionValid, setSessionValid] = useState<boolean | null>(null); // null = 未检查, true = 有效, false = 无效
+  const [isInitializing, setIsInitializing] = useState(false); // 是否正在初始化 session
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string>(
     () => crypto.randomUUID()
@@ -423,6 +433,99 @@ export default function ChatInterface({
     try {
       // 使用从URL传递的sessionId
       console.log("使用sessionId:", sessionId);
+
+      // 只在第一次发送消息时检查 session 是否存在
+      if (sessionValid === null) {
+        const testResponse = await fetch(`/code_chat/api/chat/${sessionId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query: "test",
+            conversation_id: conversationId
+          })
+        });
+
+        if (!testResponse.ok) {
+          const errorData = await testResponse.json();
+          if (errorData.detail === "Session not found") {
+            // Session 不存在，尝试自动初始化
+            if (!currentRepository?.id) {
+              setSessionValid(false);
+              setMessages((prev) => [...prev, {
+                id: assistantMessageId,
+                role: "assistant",
+                content: "❌ **无法初始化 AI 问答**\n\n无法获取当前项目信息。请返回项目列表重新进入。",
+                timestamp: new Date(),
+              }]);
+              setIsLoading(false);
+              return;
+            }
+
+            // 显示初始化提示
+            const initMessageId = (Date.now() + 2).toString();
+            setMessages((prev) => [...prev, {
+              id: initMessageId,
+              role: "assistant",
+              content: "🔄 **正在初始化 AI 问答服务...**\n\n首次使用需要上传代码库到 AI 服务，请稍候...",
+              timestamp: new Date(),
+            }]);
+
+            setIsInitializing(true);
+
+            try {
+              // 调用后端 API 初始化 session
+              const result = await api.initClaudeSession(currentRepository.id);
+
+              if (result.status === 'success') {
+                // 初始化成功，更新消息
+                setMessages((prev) => prev.map(msg =>
+                  msg.id === initMessageId
+                    ? { ...msg, content: "✅ **AI 问答服务初始化成功！**\n\n现在可以开始提问了。" }
+                    : msg
+                ));
+                setSessionValid(true);
+                setIsInitializing(false);
+
+                // 继续发送原始消息
+                // 注意：这里需要重新调用 handleSendMessage，但为了避免无限循环，
+                // 我们直接继续执行后面的代码
+              } else {
+                throw new Error(result.message || '初始化失败');
+              }
+            } catch (error: any) {
+              setMessages((prev) => prev.map(msg =>
+                msg.id === initMessageId
+                  ? {
+                      ...msg,
+                      content: `❌ **AI 问答服务初始化失败**\n\n${error.message || error}\n\n请稍后重试或联系管理员。`
+                    }
+                  : msg
+              ));
+              setSessionValid(false);
+              setIsInitializing(false);
+              setIsLoading(false);
+              return;
+            }
+          }
+        } else {
+          // Session 有效，标记为已验证
+          setSessionValid(true);
+        }
+      }
+
+      // 如果之前检查过且无效，直接返回
+      if (sessionValid === false) {
+        setMessages((prev) => [...prev, {
+          id: assistantMessageId,
+          role: "assistant",
+          content: "❌ **AI 问答服务未初始化**\n\n请参考上面的提示解决此问题。",
+          timestamp: new Date(),
+        }]);
+        setIsLoading(false);
+        return;
+      }
       
       // 调用真实的API
       await chatApi.sendMessage(

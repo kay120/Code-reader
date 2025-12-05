@@ -297,12 +297,19 @@ class WebAnalysisFlow(AsyncFlow):
             language = file_info.get("language", "")
 
             if not code_content:
-                logger.warning(f"文件 {file_path} 没有代码内容")
+                logger.warning(f"文件 {file_path} 没有代码内容，创建默认分析项")
+                # 为空文件创建一个简单的分析项
+                file_name = file_path.split("/")[-1] if "/" in file_path else file_path
                 return {
                     "file_path": file_path,
-                    "global_analysis": {},
+                    "global_analysis": {
+                        "title": f"{file_name} - 空文件",
+                        "description": "这是一个空文件，没有代码内容。通常用于标记 Python 包目录或类型提示。",
+                        "target_type": "file",
+                        "target_name": file_name,
+                        "language": language or "unknown",
+                    },
                     "detailed_analysis": [],
-                    "error": "文件没有代码内容",
                 }
 
             logger.info(f"🔍 开始分析文件: {file_path}")
@@ -1279,17 +1286,35 @@ async def analyze_data_model(
                 "message": "没有文件需要分析",
             }
 
-        logger.info(f"📁 找到 {len(files)} 个文件需要分析")
+        logger.info(f"📁 找到 {len(files)} 个文件")
 
-        # 2. 批量提交所有文件分析任务（异步，不等待完成）
-        total_files = len(files)
+        # 2. 过滤出 pending 状态的文件（跳过已完成的文件，避免重复分析）
+        pending_files = [f for f in files if f.get("status") == "pending"]
+        skipped_files = len(files) - len(pending_files)
+
+        if skipped_files > 0:
+            logger.info(f"⏭️  跳过 {skipped_files} 个已完成的文件")
+
+        if not pending_files:
+            logger.info(f"✅ 所有文件都已分析完成，无需重复提交")
+            return {
+                "status": "analysis_completed",
+                "task_id": task_id,
+                "analysis_items_count": 0,
+                "message": "所有文件都已分析完成",
+            }
+
+        logger.info(f"📋 需要分析的文件数: {len(pending_files)}")
+
+        # 3. 批量提交 pending 状态的文件分析任务（异步，不等待完成）
+        total_files = len(pending_files)
         submitted_files = 0
         failed_submissions = 0
 
         logger.info(f"🚀 开始批量提交 {total_files} 个文件分析任务...")
 
         async with aiohttp.ClientSession() as session:
-            for i, file_info in enumerate(files, 1):
+            for i, file_info in enumerate(pending_files, 1):
                 file_id = file_info.get("id")
                 file_path = file_info.get("file_path", "unknown")
 
@@ -1332,12 +1357,13 @@ async def analyze_data_model(
                     except Exception as e:
                         logger.warning(f"Progress callback failed: {str(e)}")
 
-        # 3. 汇总结果
+        # 4. 汇总结果
         success_rate = (submitted_files / total_files * 100) if total_files > 0 else 0
 
         logger.info("🏁 ========== 文件分析任务提交完成（异步模式）==========")
         logger.info(f"📊 提交统计:")
-        logger.info(f"   - 总文件数: {total_files}")
+        logger.info(f"   - 待分析文件数: {total_files}")
+        logger.info(f"   - 已跳过文件数: {skipped_files}")
         logger.info(f"   - 成功提交: {submitted_files}")
         logger.info(f"   - 提交失败: {failed_submissions}")
         logger.info(f"   - 成功率: {success_rate:.1f}%")

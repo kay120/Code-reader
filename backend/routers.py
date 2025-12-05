@@ -2,7 +2,7 @@
 API路由定义
 """
 
-from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from database import get_db
@@ -20,6 +20,11 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 import logging
 import os
+import zipfile
+import tempfile
+import shutil
+import requests
+from pathlib import Path
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -662,6 +667,11 @@ async def get_analysis_task_detail(
                     "analysis_failed_files": analysis_failed,
                     "analysis_progress": analysis_progress,
                     "task_index": task.task_index,
+                    # 关键指标
+                    "code_lines": task.code_lines or 0,
+                    "module_count": task.module_count or 0,
+                    # DeepWiki 文档生成任务 ID
+                    "deepwiki_task_id": task.deepwiki_task_id,
                 },
             },
         )
@@ -1396,31 +1406,59 @@ async def reanalyze_repository(
                 logger.info(f"✅ 已停止仓库 {repository_id} 的 {len(running_tasks)} 个旧任务")
 
             # 恢复失败任务
-            failed_task.status = 'pending'
-            failed_task.end_time = None
-            db.commit()
+            # 检查是否还有未完成的文件
+            remaining_files = failed_task.total_files - failed_task.successful_files
 
-            logger.info(f"✅ 恢复任务 {failed_task.id}，将继续分析剩余的 {failed_task.total_files - failed_task.successful_files} 个文件")
+            if remaining_files > 0:
+                # 还有文件未完成，重新提交任务
+                failed_task.status = 'pending'
+                failed_task.end_time = None
+                db.commit()
 
-            # 提交到 Celery
-            from tasks import run_analysis_task
-            run_analysis_task.delay(failed_task.id, repository.local_path)
+                logger.info(f"✅ 恢复任务 {failed_task.id}，将继续分析剩余的 {remaining_files} 个文件")
 
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "success",
-                    "message": f"已恢复任务 {failed_task.id}，继续分析",
-                    "task": {
-                        "id": failed_task.id,
-                        "repository_id": repository_id,
-                        "status": failed_task.status,
-                        "total_files": failed_task.total_files,
-                        "successful_files": failed_task.successful_files,
-                        "failed_files": failed_task.failed_files,
+                # 提交到 Celery
+                from tasks import run_analysis_task
+                run_analysis_task.delay(failed_task.id, repository.local_path)
+
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "success",
+                        "message": f"已恢复任务 {failed_task.id}，继续分析剩余的 {remaining_files} 个文件",
+                        "task": {
+                            "id": failed_task.id,
+                            "repository_id": repository_id,
+                            "status": failed_task.status,
+                            "total_files": failed_task.total_files,
+                            "successful_files": failed_task.successful_files,
+                            "failed_files": failed_task.failed_files,
+                        },
                     },
-                },
-            )
+                )
+            else:
+                # 所有文件都已完成，直接标记为完成
+                failed_task.status = 'completed'
+                failed_task.end_time = datetime.now()
+                db.commit()
+
+                logger.info(f"✅ 任务 {failed_task.id} 所有文件已完成，标记为完成")
+
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "success",
+                        "message": f"任务 {failed_task.id} 已完成",
+                        "task": {
+                            "id": failed_task.id,
+                            "repository_id": repository_id,
+                            "status": failed_task.status,
+                            "total_files": failed_task.total_files,
+                            "successful_files": failed_task.successful_files,
+                            "failed_files": failed_task.failed_files,
+                        },
+                    },
+                )
 
         # ========== 停止正在运行的任务 ==========
         running_tasks = db.query(AnalysisTask).filter(
@@ -2381,6 +2419,458 @@ async def compress_and_upload_folder(
                 "md5_folder_name": md5_folder_name,
                 "error": str(e)
             }
+        )
+
+
+@repository_router.get("/analysis-tasks/{task_id}/mermaid-diagrams")
+async def get_mermaid_diagrams(
+    task_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    获取指定分析任务的 Mermaid 图表
+
+    Args:
+        task_id: 分析任务ID
+        db: 数据库会话
+
+    Returns:
+        JSON响应包含 Mermaid 格式的类图、依赖图和流程图
+    """
+    try:
+        from utils.mermaid_generator import MermaidGenerator
+        from models import AnalysisItem
+
+        # 查询分析任务
+        task = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+        if not task:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": f"分析任务 {task_id} 不存在"
+                }
+            )
+
+        # 获取所有文件分析（通过 task_id）
+        file_analyses = db.query(FileAnalysis).filter(
+            FileAnalysis.task_id == task_id
+        ).all()
+
+        if not file_analyses:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": "未找到文件分析结果"
+                }
+            )
+
+        # 获取所有分析项
+        analysis_items = []
+        file_analyses_data = []
+
+        for file_analysis in file_analyses:
+            # 获取该文件的所有分析项
+            items = db.query(AnalysisItem).filter(
+                AnalysisItem.file_analysis_id == file_analysis.id
+            ).all()
+
+            for item in items:
+                analysis_items.append(item.to_dict())
+
+            # 收集文件分析数据（用于依赖图）
+            file_analyses_data.append({
+                "file_path": file_analysis.file_path,
+                "dependencies": []  # TODO: 从代码中提取依赖关系
+            })
+
+        # 生成所有图表
+        diagrams = MermaidGenerator.generate_all_diagrams(
+            analysis_items=analysis_items,
+            file_analyses=file_analyses_data
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "task_id": task_id,
+                "diagrams": diagrams,
+                "stats": {
+                    "total_items": len(analysis_items),
+                    "total_files": len(file_analyses),
+                    "diagram_count": len(diagrams)
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"生成 Mermaid 图表失败: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"生成 Mermaid 图表失败: {str(e)}"
+            }
+        )
+
+
+@repository_router.get("/analysis-tasks/{task_id}/quality-report")
+async def get_quality_report(
+    task_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    获取指定分析任务的代码质量报告
+
+    Args:
+        task_id: 分析任务ID
+        db: 数据库会话
+
+    Returns:
+        JSON响应包含代码质量分析结果
+    """
+    try:
+        from utils.code_quality_analyzer import CodeQualityAnalyzer
+
+        # 查询分析任务
+        task = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+        if not task:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": f"分析任务 {task_id} 不存在"
+                }
+            )
+
+        # 获取所有文件分析
+        file_analyses = db.query(FileAnalysis).filter(
+            FileAnalysis.task_id == task_id
+        ).all()
+
+        if not file_analyses:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": "未找到文件分析结果"
+                }
+            )
+
+        # 分析每个文件的代码质量
+        file_quality_results = []
+        total_score = 0
+        grade_counts = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
+        language_stats = {}
+
+        for file_analysis in file_analyses:
+            # 只分析有代码内容的文件
+            if not file_analysis.code_content:
+                continue
+
+            # 分析代码质量
+            quality_result = CodeQualityAnalyzer.analyze_file_quality(
+                file_path=file_analysis.file_path,
+                code=file_analysis.code_content,
+                language=file_analysis.language or "python"
+            )
+
+            # 只保留支持的语言
+            if not quality_result.get("supported"):
+                continue
+
+            # 统计
+            if "quality_score" in quality_result:
+                total_score += quality_result["quality_score"]
+                grade = quality_result.get("grade", "F")
+                grade_counts[grade] = grade_counts.get(grade, 0) + 1
+
+            # 语言统计
+            lang = quality_result.get("language", "unknown")
+            if lang not in language_stats:
+                language_stats[lang] = {"count": 0, "total_score": 0}
+            language_stats[lang]["count"] += 1
+            language_stats[lang]["total_score"] += quality_result.get("quality_score", 0)
+
+            # 简化结果（不包含详细的函数列表）
+            simplified_result = {
+                "file_path": quality_result["file_path"],
+                "language": quality_result["language"],
+                "quality_score": quality_result.get("quality_score", 0),
+                "grade": quality_result.get("grade", "F"),
+                "complexity_avg": quality_result.get("complexity", {}).get("average", 0),
+                "maintainability_score": quality_result.get("maintainability", {}).get("score", 0),
+                "comment_ratio": quality_result.get("comment_ratio", {}).get("ratio", 0),
+            }
+
+            file_quality_results.append(simplified_result)
+
+        # 计算总体统计
+        analyzed_files = len(file_quality_results)
+        if analyzed_files == 0:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "task_id": task_id,
+                    "message": "没有可分析的文件（可能不支持该语言）",
+                    "summary": {
+                        "total_files": len(file_analyses),
+                        "analyzed_files": 0
+                    }
+                }
+            )
+
+        average_score = total_score / analyzed_files
+
+        # 计算语言平均分
+        for lang, stats in language_stats.items():
+            if stats["count"] > 0:
+                stats["average_score"] = round(stats["total_score"] / stats["count"], 2)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "task_id": task_id,
+                "summary": {
+                    "total_files": len(file_analyses),
+                    "analyzed_files": analyzed_files,
+                    "average_score": round(average_score, 2),
+                    "overall_grade": CodeQualityAnalyzer._get_quality_grade(average_score),
+                    "grade_distribution": grade_counts,
+                    "language_stats": language_stats
+                },
+                "files": file_quality_results[:50]  # 限制返回前 50 个文件
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"生成代码质量报告失败: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"生成代码质量报告失败: {str(e)}"
+            }
+        )
+
+
+@repository_router.get("/analysis-tasks/{task_id}/dependencies")
+async def get_dependencies_analysis(
+    task_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    获取指定分析任务的依赖关系分析
+
+    Args:
+        task_id: 分析任务ID
+        db: 数据库会话
+
+    Returns:
+        JSON响应包含依赖关系分析结果
+    """
+    try:
+        from utils.dependency_analyzer import DependencyAnalyzer
+        import json as json_lib
+
+        # 查询分析任务
+        task = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+        if not task:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": f"分析任务 {task_id} 不存在"
+                }
+            )
+
+        # 获取所有文件分析
+        file_analyses = db.query(FileAnalysis).filter(
+            FileAnalysis.task_id == task_id
+        ).all()
+
+        if not file_analyses:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": "未找到文件分析结果"
+                }
+            )
+
+        # 提取每个文件的依赖关系
+        file_dependencies = {}
+
+        for file_analysis in file_analyses:
+            # 如果数据库中已经存储了依赖关系，直接使用
+            if file_analysis.dependencies:
+                try:
+                    deps = json_lib.loads(file_analysis.dependencies)
+                    if isinstance(deps, list):
+                        file_dependencies[file_analysis.file_path] = deps
+                    continue
+                except:
+                    pass
+
+            # 否则从代码中提取
+            if file_analysis.code_content:
+                deps = DependencyAnalyzer.extract_dependencies(
+                    code=file_analysis.code_content,
+                    language=file_analysis.language or "python"
+                )
+                file_dependencies[file_analysis.file_path] = deps
+
+                # 更新数据库
+                try:
+                    file_analysis.dependencies = json_lib.dumps(deps)
+                    db.commit()
+                except Exception as e:
+                    logger.warning(f"更新依赖关系失败: {e}")
+                    db.rollback()
+
+        # 分析依赖关系
+        summary = DependencyAnalyzer.analyze_dependencies_summary(file_dependencies)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "task_id": task_id,
+                "summary": summary,
+                "file_dependencies": {
+                    k: v for k, v in list(file_dependencies.items())[:50]  # 限制返回前 50 个
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"依赖关系分析失败: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"依赖关系分析失败: {str(e)}"
+            }
+        )
+
+
+@repository_router.post("/repositories/{repository_id}/init-claude-session")
+async def init_claude_session(
+    repository_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    初始化仓库的 Claude AI 会话
+
+    如果仓库已有 claude_session_id，则直接返回
+    如果没有，则打包代码并上传到 claude-agent-sdk 创建新会话
+    """
+    try:
+        # 获取仓库信息
+        repository = db.query(Repository).filter(Repository.id == repository_id).first()
+        if not repository:
+            raise HTTPException(status_code=404, detail="仓库不存在")
+
+        # 如果已有 session_id，检查是否有效
+        if repository.claude_session_id:
+            # 验证 session 是否存在
+            claude_api_url = os.getenv("CLAUDE_CHAT_API_BASE_URL", "http://localhost:8003")
+            test_response = requests.post(
+                f"{claude_api_url}/chat/{repository.claude_session_id}",
+                json={"query": "test", "conversation_id": None},
+                timeout=5
+            )
+
+            if test_response.status_code != 404:
+                # Session 有效，直接返回
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "success",
+                        "message": "Claude session 已存在",
+                        "session_id": repository.claude_session_id
+                    }
+                )
+
+        # Session 不存在或无效，创建新的
+        local_path = Path(repository.local_path)
+        if not local_path.exists():
+            raise HTTPException(status_code=404, detail=f"仓库路径不存在: {repository.local_path}")
+
+        # 创建临时 zip 文件
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
+            zip_path = tmp_file.name
+
+        try:
+            # 打包代码库
+            logger.info(f"正在打包代码库: {local_path}")
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(local_path):
+                    # 排除常见的不需要的目录
+                    dirs[:] = [d for d in dirs if d not in {
+                        '.git', '__pycache__', 'node_modules', '.venv', 'venv',
+                        '.idea', '.vscode', 'build', 'dist', '.next'
+                    }]
+
+                    for file in files:
+                        file_path = Path(root) / file
+                        arcname = file_path.relative_to(local_path)
+                        zipf.write(file_path, arcname)
+
+            # 上传到 claude-agent-sdk
+            logger.info(f"正在上传到 claude-agent-sdk")
+            claude_api_url = os.getenv("CLAUDE_CHAT_API_BASE_URL", "http://localhost:8003")
+
+            with open(zip_path, 'rb') as f:
+                files = {'file': (f'{repository.name}.zip', f, 'application/zip')}
+                response = requests.post(
+                    f"{claude_api_url}/session/create",
+                    files=files,
+                    timeout=60
+                )
+
+            if response.status_code != 201:
+                error_detail = response.json().get('detail', 'Unknown error')
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"创建 Claude session 失败: {error_detail}"
+                )
+
+            # 获取 session_id
+            result = response.json()
+            session_id = result.get('session_id')
+
+            # 更新数据库
+            repository.claude_session_id = session_id
+            db.commit()
+
+            logger.info(f"Claude session 创建成功: {session_id}")
+
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "message": "Claude session 创建成功",
+                    "session_id": session_id
+                }
+            )
+
+        finally:
+            # 清理临时文件
+            if os.path.exists(zip_path):
+                os.unlink(zip_path)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"初始化 Claude session 失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"初始化 Claude session 失败: {str(e)}"
         )
 
 

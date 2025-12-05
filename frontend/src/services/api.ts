@@ -250,13 +250,49 @@ export class ApiService {
         has_prev: boolean;
     }> {
         const searchParams = new URLSearchParams();
-        Object.entries(params).forEach(([key, value]) => {
-            if (value !== undefined) {
-                searchParams.append(key, value.toString());
-            }
-        });
+        // 使用正确的参数名
+        if (params.page !== undefined) {
+            searchParams.append('page', params.page.toString());
+        }
+        if (params.page_size !== undefined) {
+            searchParams.append('page_size', params.page_size.toString());
+        }
 
-        return this.request(`/api/projects?${searchParams.toString()}`);
+        try {
+            const response = await this.request(`/api/repository/repositories-list?${searchParams.toString()}`);
+
+            // 转换后端响应格式为前端期望的格式
+            if (response.status === 'success' && response.data) {
+                return {
+                    projects: response.data.repositories || [],
+                    total: response.data.total || 0,
+                    page: response.data.page || 1,
+                    page_size: response.data.page_size || 10,
+                    has_next: response.data.has_next || false,
+                    has_prev: response.data.has_prev || false,
+                };
+            }
+
+            // 如果响应格式不对，返回空列表
+            return {
+                projects: [],
+                total: 0,
+                page: 1,
+                page_size: 10,
+                has_next: false,
+                has_prev: false,
+            };
+        } catch (error) {
+            console.error('获取项目列表失败:', error);
+            return {
+                projects: [],
+                total: 0,
+                page: 1,
+                page_size: 10,
+                has_next: false,
+                has_prev: false,
+            };
+        }
     }
 
     // 获取项目详情
@@ -563,7 +599,12 @@ export class ApiService {
             total_files: number;
             successful_files: number;
             failed_files: number;
-            analysis_config: any;
+            code_lines: number;
+            module_count: number;
+            task_index?: string;
+            deepwiki_task_id?: string | null;
+            current_file?: string | null;
+            analysis_config?: any;
         }>;
     }> {
         return this.request(`/api/repository/analysis-tasks/${repositoryId}`);
@@ -1775,6 +1816,125 @@ export class ApiService {
             };
         }
     }
+
+    // 获取 Mermaid 图表
+    async getMermaidDiagrams(taskId: number): Promise<any> {
+        try {
+            const response = await fetch(
+                `${this.baseUrl}/api/repository/analysis-tasks/${taskId}/mermaid-diagrams`,
+                {
+                    method: "GET",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            if (response.ok) {
+                return await response.json();
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                return {
+                    status: "error",
+                    message: errorData.message || `HTTP ${response.status}`,
+                };
+            }
+        } catch (error) {
+            console.error("获取 Mermaid 图表失败:", error);
+            return {
+                status: "error",
+                message: `获取 Mermaid 图表失败: ${error}`,
+            };
+        }
+    }
+
+    // 获取代码质量报告
+    async getQualityReport(taskId: number): Promise<any> {
+        try {
+            const response = await fetch(
+                `${this.baseUrl}/api/repository/analysis-tasks/${taskId}/quality-report`,
+                {
+                    method: "GET",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            if (response.ok) {
+                return await response.json();
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                return {
+                    status: "error",
+                    message: errorData.message || `HTTP ${response.status}`,
+                };
+            }
+        } catch (error) {
+            console.error("获取代码质量报告失败:", error);
+            return {
+                status: "error",
+                message: `获取代码质量报告失败: ${error}`,
+            };
+        }
+    }
+
+    // 获取依赖分析
+    async getDependencies(taskId: number): Promise<any> {
+        try {
+            const response = await fetch(
+                `${this.baseUrl}/api/repository/analysis-tasks/${taskId}/dependencies`,
+                {
+                    method: "GET",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            if (response.ok) {
+                return await response.json();
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                return {
+                    status: "error",
+                    message: errorData.message || `HTTP ${response.status}`,
+                };
+            }
+        } catch (error) {
+            console.error("获取依赖分析失败:", error);
+            return {
+                status: "error",
+                message: `获取依赖分析失败: ${error}`,
+            };
+        }
+    }
+
+    /**
+     * 初始化仓库的 Claude AI 会话
+     */
+    async initClaudeSession(repositoryId: number): Promise<{
+        status: string;
+        message: string;
+        session_id: string;
+    }> {
+        const response = await fetch(
+            `${this.baseUrl}/api/repository/repositories/${repositoryId}/init-claude-session`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+            }
+        );
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `HTTP ${response.status}`);
+        }
+
+        return await response.json();
+    }
 }
 
 // 默认API服务实例
@@ -1907,6 +2067,18 @@ export const api = {
     // 压缩并上传文件夹
     compressAndUploadFolder: (md5FolderName: string) =>
         apiService.compressAndUploadFolder(md5FolderName),
+
+    // 代码可视化相关
+    getMermaidDiagrams: (taskId: number) =>
+        apiService.getMermaidDiagrams(taskId),
+    getQualityReport: (taskId: number) =>
+        apiService.getQualityReport(taskId),
+    getDependencies: (taskId: number) =>
+        apiService.getDependencies(taskId),
+
+    // Claude AI 会话相关
+    initClaudeSession: (repositoryId: number) =>
+        apiService.initClaudeSession(repositoryId),
 };
 
 export default api;

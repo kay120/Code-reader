@@ -429,9 +429,29 @@ async def execute_step_0_scan_files(task_id: int, local_path: str, db) -> Dict:
     """步骤0: 扫描代码文件"""
     # 延迟导入避免循环依赖
     from services import FileAnalysisService
-    
+    from models import FileAnalysis, AnalysisItem
+
     logger.info(f"开始执行步骤0: 扫描代码文件 - 任务ID: {task_id}")
-    
+
+    # 清理旧的文件记录和分析项（如果是重新分析）
+    try:
+        old_file_count = db.query(FileAnalysis).filter(FileAnalysis.task_id == task_id).count()
+        if old_file_count > 0:
+            logger.info(f"🧹 清理任务 {task_id} 的 {old_file_count} 条旧文件记录")
+
+            # 先删除关联的分析项
+            old_files = db.query(FileAnalysis).filter(FileAnalysis.task_id == task_id).all()
+            for file in old_files:
+                db.query(AnalysisItem).filter(AnalysisItem.file_analysis_id == file.id).delete()
+
+            # 再删除文件记录
+            db.query(FileAnalysis).filter(FileAnalysis.task_id == task_id).delete()
+            db.commit()
+            logger.info(f"✅ 已清理旧记录")
+    except Exception as e:
+        logger.warning(f"清理旧记录失败: {str(e)}")
+        db.rollback()
+
     try:
         # 获取文件列表
         file_list = get_file_list_from_path(local_path)
@@ -821,11 +841,22 @@ async def execute_step_3_generate_document_structure(task_id: int, external_file
         if not readme_api_task_id:
             return {"success": False, "message": "文档结构生成任务创建失败: 请求在最大重试次数后仍未成功"}
 
+        # 保存 deepwiki 任务 ID 到数据库，以便前端轮询进度
+        logger.info(f"保存 deepwiki 任务 ID 到数据库: {readme_api_task_id}")
+        with SessionLocal() as db:
+            task = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+            if task:
+                task.deepwiki_task_id = readme_api_task_id
+                db.commit()
+                logger.info(f"✅ 已保存 deepwiki 任务 ID: {readme_api_task_id}")
+            else:
+                logger.warning(f"未找到任务 {task_id}，无法保存 deepwiki 任务 ID")
+
         # 2. 轮询检查生成状态
         logger.info("开始轮询检查文档生成状态...")
         completed = False
         attempts = 0
-        max_attempts = 60  # 最多轮询60次（5分钟）
+        max_attempts = 360  # 最多轮询360次（30分钟）- 增加超时时间以支持大型项目
         poll_interval = 5  # 每5秒检查一次
 
         while not completed and attempts < max_attempts:
@@ -891,6 +922,24 @@ async def execute_step_3_generate_document_structure(task_id: int, external_file
 
                             # 等待下次检查
                             await asyncio.sleep(poll_interval)
+                    elif status_response.status_code == 404:
+                        # HTTP 404 说明任务已被删除（可能是崩溃了），立即退出
+                        logger.error(f"文档生成任务已被删除 (HTTP 404)，停止检查")
+
+                        # 清除数据库中的 deepwiki_task_id，避免前端显示"文档生成中"
+                        from database import SessionLocal
+                        from models import AnalysisTask
+                        db = SessionLocal()
+                        try:
+                            task = db.query(AnalysisTask).filter(AnalysisTask.id == task_id).first()
+                            if task:
+                                task.deepwiki_task_id = None
+                                db.commit()
+                                logger.info(f"已清除任务 {task_id} 的 deepwiki_task_id")
+                        finally:
+                            db.close()
+
+                        break
                     else:
                         logger.error(f"检查文档生成状态失败: HTTP {status_response.status_code}")
                         await asyncio.sleep(poll_interval)
@@ -924,8 +973,16 @@ async def execute_step_3_generate_document_structure(task_id: int, external_file
                 await asyncio.sleep(poll_interval)
 
         if not completed:
-            logger.error("文档生成超时")
-            return {"success": False, "message": "文档生成超时"}
+            logger.warning(f"文档生成轮询超时（{max_attempts * poll_interval}秒），但任务可能仍在后台运行")
+            logger.info(f"deepwiki 任务 ID: {readme_api_task_id} 已保存到数据库，前端可继续轮询")
+            # 不返回失败，而是返回成功但带有警告信息
+            # 前端可以继续轮询 deepwiki_task_id 来获取最终结果
+            return {
+                "success": True,
+                "message": f"文档生成任务已提交（任务ID: {readme_api_task_id}），正在后台处理中",
+                "warning": "轮询超时，但任务仍在后台运行",
+                "deepwiki_task_id": readme_api_task_id
+            }
 
     except Exception as e:
         error_traceback = traceback.format_exc()
@@ -989,11 +1046,25 @@ async def run_task(task_id: int, external_file_path: str):
             vectorstore_index = None
 
             if task_obj and task_obj.task_index:
-                # 如果已有 task_index，说明步骤0和步骤1已完成
-                is_resume = True
-                vectorstore_index = task_obj.task_index
-                logger.info(f"🔄 检测到恢复任务，跳过步骤0和步骤1，使用已有索引: {vectorstore_index}")
-                logger.info(f"📊 当前进度: {task_obj.successful_files}/{task_obj.total_files} 个文件已完成")
+                # 检查是否真的是恢复任务：需要同时满足以下条件
+                # 1. 有 task_index（说明步骤1已完成）
+                # 2. 有文件记录（说明步骤0已完成）
+                # 3. total_files > 0（说明已经扫描过文件）
+                from models import FileAnalysis
+                file_count = db.query(FileAnalysis).filter(FileAnalysis.task_id == task_id).count()
+
+                if file_count > 0 and task_obj.total_files > 0:
+                    # 真正的恢复任务
+                    is_resume = True
+                    vectorstore_index = task_obj.task_index
+                    logger.info(f"🔄 检测到恢复任务，跳过步骤0和步骤1，使用已有索引: {vectorstore_index}")
+                    logger.info(f"📊 当前进度: {task_obj.successful_files}/{task_obj.total_files} 个文件已完成")
+                else:
+                    # 虽然有 task_index，但没有文件记录，说明步骤0未完成
+                    # 清除 task_index，从头开始
+                    logger.warning(f"⚠️ 任务 {task_id} 有 task_index 但没有文件记录，清除 task_index 并从头开始")
+                    task_obj.task_index = None
+                    db.commit()
 
             # ========== 执行4个分析步骤 ==========
 

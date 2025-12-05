@@ -18,6 +18,7 @@ import { api } from "../services/api";
 import { findFileInTree, FileNode, normalizePath } from "../utils/fileTree";
 import { MermaidBlock } from "./MermaidBlock";
 import SVGViewer from "./SVGViewer";
+import { CodeVisualization } from "./CodeVisualization";
 // import MermaidDiagram from "./MermaidDiagram";
 // import "./MermaidDiagram.css";
 
@@ -334,6 +335,9 @@ const MainContentComponent = ({
   taskId,
   repositoryInfo,
 }: MainContentProps) => {
+  // 调试：打印 taskStatistics
+  console.log("🎯 [MainContent] taskStatistics prop:", taskStatistics);
+
   const [markdownContent, setMarkdownContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -377,7 +381,7 @@ const MainContentComponent = ({
         setTaskStatus(data);
 
         // 根据任务状态生成进度消息
-        if (data.status === "running") {
+        if (data.status === "running" || data.status === "processing") {
           const successfulFiles = data.successful_files || 0;
           const totalFiles = data.total_files || 0;
           const analysisSuccess = data.analysis_success_files || 0;
@@ -672,6 +676,23 @@ const MainContentComponent = ({
   }, [markdownContent, markdownComponents, isLoading, error, activeSection]);
 
   const renderContent = () => {
+    // 代码可视化
+    if (activeSection === "visualization") {
+      if (!taskId) {
+        return (
+          <div className="space-y-6">
+            <div>
+              <h1>代码可视化</h1>
+              <p className="text-gray-600 mt-2">
+                暂无任务数据，无法生成可视化内容
+              </p>
+            </div>
+          </div>
+        );
+      }
+      return <CodeVisualization taskId={taskId} />;
+    }
+
     // 如果是项目概览，显示固定的概览内容
     if (activeSection === "overview") {
       return (
@@ -686,8 +707,8 @@ const MainContentComponent = ({
             </p>
           </div>
 
-          {/* 任务进度 - 只在running状态显示 */}
-          {taskStatus && taskStatus.status === "running" && progressMessage && (
+          {/* 任务进度 - 在running或processing状态显示 */}
+          {taskStatus && (taskStatus.status === "running" || taskStatus.status === "processing") && progressMessage && (
             <Card className="p-6 bg-blue-50 border-blue-200">
               <div className="space-y-4">
                 <div className="flex items-center justify-between">

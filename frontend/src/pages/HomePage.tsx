@@ -212,9 +212,9 @@ export default function HomePage() {
                 ) : (
                   repositories.reduce(
                     (sum, repo) => {
-                      // 统计正在运行的任务数量
+                      // 统计正在运行的任务数量（包括 running 和 processing 状态）
                       const runningCount = repo.tasks
-                        ? repo.tasks.filter((task: any) => task.status === "running").length
+                        ? repo.tasks.filter((task: any) => task.status === "running" || task.status === "processing").length
                         : 0;
                       return sum + runningCount;
                     },

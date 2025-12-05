@@ -1,4 +1,4 @@
-const CHAT_BAST_URL = "/code_chat/api";
+const CHAT_BASE_URL = "/code_chat/api";
 
 export interface Conversation {
     id: string;
@@ -10,6 +10,24 @@ export interface Conversation {
 }
 
 export const chatApi = {
+    // 创建新的 session（上传代码库）
+    createSession: async (zipFile: File): Promise<{ session_id: string; message: string }> => {
+        const formData = new FormData();
+        formData.append('file', zipFile);
+
+        const response = await fetch(`${CHAT_BASE_URL}/session/create`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || `Failed to create session: ${response.status}`);
+        }
+
+        return await response.json();
+    },
+
     // 获取会话的所有对话列表
     // 注意：claude-agent-sdk 目前没有实现此 API，暂时禁用
     getConversations: async (sessionId: string): Promise<Conversation[]> => {
@@ -47,7 +65,7 @@ export const chatApi = {
         conversationId: string,
         onEvent?: (event: string, data: any) => void
     ) => {
-        const response = await fetch(`${CHAT_BAST_URL}/chat/${sessionId}`, {
+        const response = await fetch(`${CHAT_BASE_URL}/chat/${sessionId}`, {
             method: 'POST',
             headers: {
                 'accept': 'application/json',

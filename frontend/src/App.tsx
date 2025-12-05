@@ -6,6 +6,7 @@ import DeepWikiInterface from "./components/DeepWikiInterface";
 import PersonalSpace from "./components/PersonalSpace";
 import ChatInterface from "./components/ChatInterface";
 import MermaidPreloader from "./utils/mermaidPreloader";
+import { useProject } from "./contexts/ProjectContext";
 
 type AppState =
   | "upload"
@@ -28,6 +29,7 @@ interface AnalysisConfiguration {
 }
 
 export default function App() {
+  const { currentRepository } = useProject();
   const [appState, setAppState] = useState<AppState>("upload");
   const [currentVersionId, setCurrentVersionId] = useState<string>("v3");
   const [analysisConfig, setAnalysisConfig] =
@@ -209,11 +211,23 @@ export default function App() {
           <PersonalSpace onBack={handleBackToDeepWiki} />
         )}
 
-        {appState === "chat" && (
+        {appState === "chat" && currentRepository?.claude_session_id && (
           <ChatInterface
             onBack={handleBackToDeepWiki}
             currentVersionId={currentVersionId}
+            sessionId={currentRepository.claude_session_id}
           />
+        )}
+
+        {appState === "chat" && !currentRepository?.claude_session_id && (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center p-8">
+              <h2 className="text-2xl font-bold text-gray-700 mb-4">无法启动 AI 问答</h2>
+              <p className="text-gray-600">
+                当前项目没有关联的会话 ID，请先返回项目页面。
+              </p>
+            </div>
+          </div>
         )}
       </main>
     </div>
