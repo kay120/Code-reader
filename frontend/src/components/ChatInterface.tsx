@@ -478,7 +478,7 @@ export default function ChatInterface({
               // 调用后端 API 初始化 session
               const result = await api.initClaudeSession(currentRepository.id);
 
-              if (result.status === 'success') {
+              if (result.status === 'success' && result.session_id) {
                 // 初始化成功，更新消息
                 setMessages((prev) => prev.map(msg =>
                   msg.id === initMessageId
@@ -488,9 +488,68 @@ export default function ChatInterface({
                 setSessionValid(true);
                 setIsInitializing(false);
 
-                // 继续发送原始消息
-                // 注意：这里需要重新调用 handleSendMessage，但为了避免无限循环，
-                // 我们直接继续执行后面的代码
+                // ✅ 重要：使用新的 session_id 发送消息
+                console.log(`🔄 Session 初始化成功，新 session_id: ${result.session_id}`);
+
+                // 使用新的 session_id 重新发送消息
+                await chatApi.sendMessage(
+                  result.session_id,  // 使用新的 session_id
+                  content.trim(),
+                  conversationId,
+                  (event: string, data: any) => {
+                    console.log("event", event);
+                    // 处理不同的SSE事件
+                    switch (event) {
+                        case "text_delta":
+                          console.log("text_delta-event", data);
+                          if (data && data.delta) {
+                            console.log("data", data);
+                            const newMessage: ChatMessage = {
+                              id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                              role: "assistant",
+                              content: data.delta,
+                              timestamp: new Date(),
+                            };
+                            setMessages((prev) => [...prev, newMessage]);
+                          }
+                          break;
+                        case "tool_use":
+                          console.log("tool_use-event", data);
+                          if (data && data.tool_name) {
+                            const toolMessage: ChatMessage = {
+                              id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                              role: "assistant",
+                              content: "",
+                              timestamp: new Date(),
+                              toolUse: {
+                                toolName: data.tool_name,
+                                toolInput: data.tool_input,
+                              },
+                            };
+                            setMessages((prev) => [...prev, toolMessage]);
+                          }
+                          break;
+                        case "message_stop":
+                          console.log("message_stop-event", data);
+                          setIsLoading(false);
+                          break;
+                        case "error":
+                          console.error("error-event", data);
+                          const errorMessage: ChatMessage = {
+                            id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                            role: "assistant",
+                            content: `❌ **错误**\n\n${data.error_message || "未知错误"}`,
+                            timestamp: new Date(),
+                          };
+                          setMessages((prev) => [...prev, errorMessage]);
+                          setIsLoading(false);
+                          break;
+                    }
+                  }
+                );
+
+                // 已经发送消息，直接返回
+                return;
               } else {
                 throw new Error(result.message || '初始化失败');
               }
