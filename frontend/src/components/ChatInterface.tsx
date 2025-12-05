@@ -588,7 +588,7 @@ export default function ChatInterface({
       
       // 调用真实的API
       await chatApi.sendMessage(
-        sessionId,  
+        sessionId,
         content.trim(),
         conversationId,
         (event: string, data: any) => {
@@ -599,13 +599,26 @@ export default function ChatInterface({
                 console.log("text_delta-event", data);
                 if (data && data.delta) {
                   console.log("data", data);
-                  const newMessage: ChatMessage = {
-                    id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                    role: "assistant",
-                    content: data.delta,
-                    timestamp: new Date(),
-                  };
-                  setMessages((prev) => [...prev, newMessage]);
+                  // ✅ 累积文本到同一个消息，而不是每次都创建新消息
+                  setMessages((prev) => {
+                    const lastMsg = prev[prev.length - 1];
+                    // 如果最后一条消息是 assistant 且 id 匹配，则累积文本
+                    if (lastMsg && lastMsg.id === assistantMessageId && lastMsg.role === "assistant") {
+                      return prev.map((msg, idx) =>
+                        idx === prev.length - 1
+                          ? { ...msg, content: msg.content + data.delta }
+                          : msg
+                      );
+                    } else {
+                      // 否则创建新消息
+                      return [...prev, {
+                        id: assistantMessageId,
+                        role: "assistant",
+                        content: data.delta,
+                        timestamp: new Date(),
+                      }];
+                    }
+                  });
                 }
                 break;
 
