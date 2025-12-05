@@ -252,7 +252,13 @@ const MessageContent = ({ content }: { content: string }) => {
           // @ts-ignore
           code: ({ node, inline, className, children, ...props }: any) => {
             const match = /language-(\w+)/.exec(className || "");
-            return !inline ? (
+            // 判断是否为内联代码：
+            // 1. 如果 inline 参数存在且为 true，则为内联代码
+            // 2. 如果没有 className（没有语言标记），且内容较短，则视为内联代码
+            const codeContent = String(children).replace(/\n$/, '');
+            const isInline = inline === true || (!className && !codeContent.includes('\n') && codeContent.length < 100);
+
+            return !isInline ? (
               <div className="my-3 rounded-lg overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-2 bg-gray-800 text-gray-300 text-sm">
                   <span className="flex items-center space-x-2">
@@ -263,7 +269,7 @@ const MessageContent = ({ content }: { content: string }) => {
                     variant="ghost"
                     size="sm"
                     className="h-6 w-6 p-0 text-gray-400 hover:text-white"
-                    onClick={() => navigator.clipboard.writeText(String(children))}
+                    onClick={() => navigator.clipboard.writeText(codeContent)}
                   >
                     <Copy className="h-3 w-3" />
                   </Button>
