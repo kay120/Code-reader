@@ -625,6 +625,8 @@ export default function ChatInterface({
           switch (event) {
               case "text_delta":
                 console.log("text_delta-event", data);
+                // ✅ 收到第一个文本增量时，取消 loading 状态
+                setIsLoading(false);
                 if (data && data.delta) {
                   console.log("data", data);
                   // ✅ 累积文本到同一个消息，而不是每次都创建新消息
