@@ -863,7 +863,7 @@ export default function ChatInterface({
                                           <div className="text-sm font-medium text-amber-800 mb-2">
                                             {idx + 1}. {msg.toolUse?.toolName}
                                           </div>
-                                          {msg.toolUse?.toolInput && (
+                                          {msg.toolUse?.toolInput && Object.keys(msg.toolUse.toolInput).length > 0 && (
                                             <div>
                                               <div className="text-xs font-medium text-gray-600 mb-1">
                                                 参数:
@@ -951,7 +951,7 @@ export default function ChatInterface({
                                       调用工具: {message.toolUse.toolName}
                                     </span>
                                   </div>
-                                  {message.toolUse.toolInput && (
+                                  {message.toolUse.toolInput && Object.keys(message.toolUse.toolInput).length > 0 && (
                                     <div className="mt-2 p-3 bg-white rounded-lg border border-amber-200">
                                       <div className="text-xs font-medium text-gray-600 mb-1">
                                         参数:
