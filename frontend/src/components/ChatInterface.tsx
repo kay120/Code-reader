@@ -24,6 +24,7 @@ import {
   Wrench,
   ChevronDown,
   ChevronRight,
+  RotateCcw,
 } from "lucide-react";
 import { chatApi } from "../services/chat-api";
 import { api } from "../services/api";
@@ -804,10 +805,26 @@ export default function ChatInterface({
             </div>
           </div>
 
-          <Badge variant="secondary" className="flex items-center space-x-1">
-            <Sparkles className="h-3 w-3" />
-            <span>本地AI模型</span>
-          </Badge>
+          <div className="flex items-center space-x-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // 生成新的 conversation_id，清除对话历史
+                setConversationId(crypto.randomUUID());
+                setMessages([]);
+                setLoadingStatus("AI正在分析思考...");
+              }}
+              className="flex items-center space-x-1 text-gray-600 hover:text-gray-900"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>新建对话</span>
+            </Button>
+            <Badge variant="secondary" className="flex items-center space-x-1">
+              <Sparkles className="h-3 w-3" />
+              <span>本地AI模型</span>
+            </Badge>
+          </div>
         </div>
       </div>
 
