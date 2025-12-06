@@ -361,6 +361,7 @@ export default function ChatInterface({
 
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState("AI正在分析思考..."); // 显示当前处理状态
   const [sessionValid, setSessionValid] = useState<boolean | null>(null); // null = 未检查, true = 有效, false = 无效
   const [isInitializing, setIsInitializing] = useState(false); // 是否正在初始化 session
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -390,6 +391,27 @@ export default function ChatInterface({
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // 工具名称转换为友好显示
+  const getToolDisplayName = (toolName: string): string => {
+    const toolMap: Record<string, string> = {
+      // 内置工具
+      "Glob": "🔍 搜索文件",
+      "Read": "📖 读取文件",
+      "Grep": "🔎 搜索代码",
+      "Task": "📋 创建任务",
+      "TodoWrite": "✏️ 写入 TODO",
+      "TodoRead": "📑 读取 TODO",
+      "LS": "📁 列出目录",
+      "Bash": "💻 执行命令",
+      "Write": "✍️ 写入文件",
+      "Edit": "📝 编辑文件",
+      // MCP 工具
+      "mcp__rag-tools__rag_search": "🧠 语义搜索",
+      "mcp__rag-tools__get_project_summary": "📊 获取项目摘要",
+    };
+    return toolMap[toolName] || `🔧 ${toolName}`;
+  };
 
   // 将连续的工具调用消息分组
   const groupMessages = (messages: ChatMessage[]) => {
@@ -452,6 +474,7 @@ export default function ChatInterface({
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
     setIsLoading(true);
+    setLoadingStatus("AI正在分析思考..."); // 重置状态
 
     // 创建AI响应消息（初始为空）
     const assistantMessageId = (Date.now() + 1).toString();
@@ -550,6 +573,10 @@ export default function ChatInterface({
                         case "tool_use":
                           console.log("tool_use-event", data);
                           if (data && data.tool_name) {
+                            // ✅ 更新 loading 状态，显示正在使用的工具
+                            const toolDisplayName = getToolDisplayName(data.tool_name);
+                            setLoadingStatus(`正在使用 ${toolDisplayName}...`);
+
                             const toolMessage: ChatMessage = {
                               id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                               role: "assistant",
@@ -662,6 +689,10 @@ export default function ChatInterface({
               // 工具使用事件
               if (data && data.tool_name) {
                 console.log("工具调用:", data);
+                // ✅ 更新 loading 状态，显示正在使用的工具
+                const toolDisplayName = getToolDisplayName(data.tool_name);
+                setLoadingStatus(`正在使用 ${toolDisplayName}...`);
+
                 const toolMessage: ChatMessage = {
                   id: `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                   role: "assistant",
@@ -1028,7 +1059,7 @@ export default function ChatInterface({
                                 ></div>
                               </div>
                               <span className="text-sm text-gray-500">
-                                AI正在分析思考...
+                                {loadingStatus}
                               </span>
                             </div>
                           </div>
